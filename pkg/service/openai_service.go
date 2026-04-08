@@ -1,0 +1,814 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/Vero-Receipts/vero-mcp/pkg/domain"
+)
+
+const openAIURL = "https://api.openai.com/v1/chat/completions"
+
+// OpenAIService uses GPT-4o Vision to parse receipt images into structured data.
+type OpenAIService struct {
+	apiKey     string
+	httpClient *http.Client
+}
+
+func NewOpenAIService(apiKey string) *OpenAIService {
+	return &OpenAIService{
+		apiKey:     apiKey,
+		httpClient: &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+const maxRetries = 3
+
+// doRequest executes a single OpenAI chat-completions POST and retries on 429
+// (rate-limit) responses using the Retry-After header or exponential back-off.
+// It returns the raw response body on success (HTTP 200) and an error otherwise.
+func (s *OpenAIService) doRequest(ctx context.Context, bodyBytes []byte) ([]byte, error) {
+	var (
+		resp      *http.Response
+		respBytes []byte
+	)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAIURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+s.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err = s.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("openai request: %w", err)
+		}
+		respBytes, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusTooManyRequests {
+			break
+		}
+		if attempt == maxRetries {
+			return nil, fmt.Errorf("OpenAI API returned %d: %s", resp.StatusCode, string(respBytes))
+		}
+
+		// Honour Retry-After if present, otherwise use exponential back-off.
+		wait := time.Duration(1<<uint(attempt)) * time.Second
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, parseErr := strconv.ParseFloat(ra, 64); parseErr == nil {
+				wait = time.Duration(secs*float64(time.Second)) + 100*time.Millisecond
+			}
+		}
+		slog.Warn("OpenAI rate limited, retrying", "attempt", attempt+1, "wait", wait)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("OpenAI API returned %d: %s", resp.StatusCode, string(respBytes))
+	}
+	return respBytes, nil
+}
+
+// openAIReceiptData is the structured schema returned by GPT-4o.
+type openAIReceiptData struct {
+	MerchantName    string           `json:"merchantName"`
+	MerchantAddress string           `json:"merchantAddress"`
+	TransactionDate string           `json:"transactionDate"` // YYYY-MM-DD
+	TransactionTime string           `json:"transactionTime"` // HH:MM
+	Subtotal        float64          `json:"subtotal"`
+	Tax             float64          `json:"tax"`
+	Tip             float64          `json:"tip"`
+	Total           float64          `json:"total"`
+	Currency        string           `json:"currency"` // ISO 4217 (e.g. "USD", "MXN")
+	PaymentMethod   string           `json:"paymentMethod"`
+	LastFourDigits  string           `json:"lastFourDigits"`
+	LineItems       []openAILineItem `json:"lineItems"`
+}
+
+type openAILineItem struct {
+	Description string  `json:"description"`
+	Quantity    float64 `json:"quantity"`
+	UnitPrice   float64 `json:"unitPrice"`
+	TotalPrice  float64 `json:"totalPrice"`
+}
+
+// mimeTypeFromPath returns the MIME type based on file extension.
+func mimeTypeFromPath(filePath string) string {
+	mimeTypes := map[string]string{
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".png":  "image/png",
+		".gif":  "image/gif",
+		".webp": "image/webp",
+		".heic": "image/heic",
+	}
+	ext := filepath.Ext(filePath)
+	if m, ok := mimeTypes[ext]; ok {
+		return m
+	}
+	return "image/jpeg"
+}
+
+// ParseImage sends the receipt image to GPT-4o Vision and returns a structured OCRResult.
+func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain.OCRResult {
+	if s.apiKey == "" {
+		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
+		return &domain.OCRResult{Error: "OpenAI API key not configured"}
+	}
+
+	slog.Info("[OpenAI] parsing receipt image", "path", filePath)
+
+	imageBytes, err := os.ReadFile(filePath)
+	if err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("read image: %v", err)}
+	}
+
+	mimeType := mimeTypeFromPath(filePath)
+	return s.ParseImageData(ctx, imageBytes, mimeType)
+}
+
+// ParseImageData sends the receipt image bytes to GPT-4o Vision and returns a structured OCRResult.
+func (s *OpenAIService) ParseImageData(ctx context.Context, imageBytes []byte, mimeType string) *domain.OCRResult {
+	if s.apiKey == "" {
+		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
+		return &domain.OCRResult{Error: "OpenAI API key not configured"}
+	}
+
+	base64Image := base64.StdEncoding.EncodeToString(imageBytes)
+
+	// JSON schema for structured output — mirrors the JS receiptSchema exactly.
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"merchantName":    map[string]string{"type": "string", "description": "Name of the merchant or store"},
+			"merchantAddress": map[string]string{"type": "string", "description": "Full address of the merchant"},
+			"transactionDate": map[string]string{"type": "string", "description": "Date of transaction in YYYY-MM-DD format"},
+			"transactionTime": map[string]string{"type": "string", "description": "Time of transaction in HH:MM format"},
+			"subtotal":        map[string]string{"type": "number", "description": "Subtotal amount before tax and tip"},
+			"tax":             map[string]string{"type": "number", "description": "Tax amount"},
+			"tip":             map[string]string{"type": "number", "description": "Tip amount if present, otherwise 0"},
+			"total":           map[string]string{"type": "number", "description": "Total amount paid"},
+			"currency":        map[string]string{"type": "string", "description": "ISO 4217 currency code (e.g. USD, EUR, MXN, GBP, JPY). Determine from currency symbols or text on the receipt."},
+			"paymentMethod":   map[string]string{"type": "string", "description": "Payment method used (e.g., Credit Card, Cash, Debit)"},
+			"lastFourDigits":  map[string]string{"type": "string", "description": "Last 4 digits of card if visible, otherwise empty string"},
+			"lineItems": map[string]interface{}{
+				"type":        "array",
+				"description": "List of items purchased",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"description": map[string]string{"type": "string", "description": "Item name or description"},
+						"quantity":    map[string]string{"type": "number", "description": "Quantity of the item"},
+						"unitPrice":   map[string]string{"type": "number", "description": "Price per unit"},
+						"totalPrice":  map[string]string{"type": "number", "description": "Total price for this line item (quantity * unitPrice)"},
+					},
+					"required":             []string{"description", "quantity", "unitPrice", "totalPrice"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required": []string{
+			"merchantName", "merchantAddress", "transactionDate", "transactionTime",
+			"subtotal", "tax", "tip", "total", "currency", "paymentMethod", "lastFourDigits", "lineItems",
+		},
+		"additionalProperties": false,
+	}
+
+	reqBody := map[string]interface{}{
+		"model": "gpt-4o",
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type": "text",
+						"text": `Analyze this receipt image and extract all information in a structured format.
+
+Instructions:
+- Extract merchant name, address, date, and time
+- List all purchased items with their quantities and prices
+- Include subtotal, tax, tip (if any), and total
+- Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If the merchant address is in Mexico and the symbol is $, use MXN. If ambiguous, default to USD.
+- Identify payment method and last 4 digits of card if visible
+- If any field is not visible or unclear, use reasonable defaults (empty string for text, 0 for numbers)
+- IMPORTANT: For the transaction date, carefully distinguish the DATE from the TIME. They are separate fields. The date is the calendar day (month/day/year) and the time is the clock reading (hours:minutes). Do NOT mix digits from the time into the date.
+- The date on the receipt may appear in various formats (e.g. "MARCH 1, 2026", "03/01/26", "2026-03-01"). Parse it carefully and output in YYYY-MM-DD format.
+- If the year is ambiguous or appears to be in the past (e.g. 2023 for a recent receipt), double-check the receipt for other year clues (e.g. return policy dates, copyright notices). When in doubt and the current year is 2026, prefer the current year.
+- For times, use HH:MM format (24-hour)
+- All monetary amounts should be numbers (not strings)`,
+					},
+					{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:%s;base64,%s", mimeType, base64Image),
+						},
+					},
+				},
+			},
+		},
+		"response_format": map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name":   "receipt_extraction",
+				"strict": true,
+				"schema": schema,
+			},
+		},
+		"temperature": 0.1,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
+	}
+
+	respBytes, err := s.doRequest(ctx, bodyBytes)
+	if err != nil {
+		return &domain.OCRResult{Error: err.Error()}
+	}
+
+	// Unwrap the chat completion envelope.
+	var completion struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBytes, &completion); err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("decode completion: %v", err)}
+	}
+	if completion.Error != nil {
+		return &domain.OCRResult{Error: completion.Error.Message}
+	}
+	if len(completion.Choices) == 0 {
+		return &domain.OCRResult{Error: "no choices in OpenAI response"}
+	}
+
+	// Parse the structured JSON content.
+	var data openAIReceiptData
+	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &data); err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("decode receipt data: %v", err)}
+	}
+
+	slog.Info("[OpenAI] successfully parsed receipt",
+		"merchant", data.MerchantName,
+		"total", data.Total,
+		"items", len(data.LineItems),
+	)
+
+	// Map to domain.LineItem slice.
+	lineItems := make([]domain.LineItem, 0, len(data.LineItems))
+	for _, item := range data.LineItems {
+		unitPrice := item.UnitPrice
+		if unitPrice == 0 && item.Quantity != 0 {
+			unitPrice = item.TotalPrice / item.Quantity
+		}
+		lineItems = append(lineItems, domain.LineItem{
+			Description: item.Description,
+			Quantity:    item.Quantity,
+			UnitPrice:   unitPrice,
+			Price:       item.TotalPrice,
+		})
+	}
+
+	// Build a human-readable raw text summary for backward compat / fallback matching.
+	cur := data.Currency
+	if cur == "" {
+		cur = "USD"
+	}
+	var rawBuf bytes.Buffer
+	fmt.Fprintf(&rawBuf, "Merchant: %s\n", data.MerchantName)
+	fmt.Fprintf(&rawBuf, "Date: %s\n", data.TransactionDate)
+	fmt.Fprintf(&rawBuf, "Time: %s\n", data.TransactionTime)
+	fmt.Fprintf(&rawBuf, "Subtotal: %.2f %s\n", data.Subtotal, cur)
+	fmt.Fprintf(&rawBuf, "Tax: %.2f %s\n", data.Tax, cur)
+	fmt.Fprintf(&rawBuf, "Tip: %.2f %s\n", data.Tip, cur)
+	fmt.Fprintf(&rawBuf, "Total: %.2f %s\n", data.Total, cur)
+	rawBuf.WriteString("Items:\n")
+	for _, item := range lineItems {
+		fmt.Fprintf(&rawBuf, "%.gx %s - %.2f %s\n", item.Quantity, item.Description, item.Price, cur)
+	}
+
+	subtotal := data.Subtotal
+	tax := data.Tax
+	tip := data.Tip
+	total := data.Total
+
+	return &domain.OCRResult{
+		RawText:         rawBuf.String(),
+		LineItems:       lineItems,
+		MerchantName:    data.MerchantName,
+		MerchantAddress: data.MerchantAddress,
+		TransactionDate: data.TransactionDate,
+		TransactionTime: data.TransactionTime,
+		Subtotal:        &subtotal,
+		Tax:             &tax,
+		Tip:             &tip,
+		Total:           &total,
+		Currency:        data.Currency,
+		PaymentMethod:   data.PaymentMethod,
+		LastFourDigits:  data.LastFourDigits,
+	}
+}
+
+// ParseTextAsReceipt sends text (e.g. extracted from an email body or PDF)
+// to GPT-4o for structured receipt extraction. This is the same underlying
+// call that host applications use for email-body receipt parsing.
+// The method is exported so that wrapper applications can call it directly.
+func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contextLabel string, receivedAt *time.Time) *domain.OCRResult {
+	if s.apiKey == "" {
+		return &domain.OCRResult{Error: "OpenAI API key not configured"}
+	}
+
+	slog.Info("[OpenAI] parsing text for receipt data", "context", contextLabel)
+
+	// Truncate very long bodies to avoid excessive token usage.
+	if len(bodyText) > 8000 {
+		bodyText = bodyText[:8000]
+	}
+
+	// If the body still contains CSS-like patterns after HTML stripping,
+	// it's likely that style blocks were not fully removed. Truncate aggressively.
+	if strings.Count(bodyText, "{") > 20 && strings.Count(bodyText, "}") > 20 {
+		slog.Warn("[OpenAI] text appears to still contain CSS, truncating", "context", contextLabel)
+		if len(bodyText) > 4000 {
+			bodyText = bodyText[:4000]
+		}
+	}
+
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"merchantName":    map[string]string{"type": "string", "description": "Name of the merchant or store"},
+			"merchantAddress": map[string]string{"type": "string", "description": "Full address of the merchant"},
+			"transactionDate": map[string]string{"type": "string", "description": "Date of transaction in YYYY-MM-DD format"},
+			"transactionTime": map[string]string{"type": "string", "description": "Time of transaction in HH:MM format"},
+			"subtotal":        map[string]string{"type": "number", "description": "Subtotal amount before tax and tip"},
+			"tax":             map[string]string{"type": "number", "description": "Tax amount"},
+			"tip":             map[string]string{"type": "number", "description": "Tip amount if present, otherwise 0"},
+			"total":           map[string]string{"type": "number", "description": "Total amount paid"},
+			"currency":        map[string]string{"type": "string", "description": "ISO 4217 currency code (e.g. USD, EUR, MXN, GBP, JPY). Determine from currency symbols or text."},
+			"paymentMethod":   map[string]string{"type": "string", "description": "Payment method used (e.g., Credit Card, Cash, Debit)"},
+			"lastFourDigits":  map[string]string{"type": "string", "description": "Last 4 digits of card if visible, otherwise empty string"},
+			"lineItems": map[string]interface{}{
+				"type":        "array",
+				"description": "List of items purchased",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"description": map[string]string{"type": "string", "description": "Item name or description"},
+						"quantity":    map[string]string{"type": "number", "description": "Quantity of the item"},
+						"unitPrice":   map[string]string{"type": "number", "description": "Price per unit"},
+						"totalPrice":  map[string]string{"type": "number", "description": "Total price for this line item (quantity * unitPrice)"},
+					},
+					"required":             []string{"description", "quantity", "unitPrice", "totalPrice"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required": []string{
+			"merchantName", "merchantAddress", "transactionDate", "transactionTime",
+			"subtotal", "tax", "tip", "total", "currency", "paymentMethod", "lastFourDigits", "lineItems",
+		},
+		"additionalProperties": false,
+	}
+
+	prompt := fmt.Sprintf(`Extract receipt/invoice data from this text.
+
+%s
+
+Text:
+%s
+
+Instructions:
+- Extract the merchant name, address, transaction date, and time
+- List all purchased items with quantities and prices
+- Include subtotal, tax, tip (if any), and total
+- Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If text says "USD" or similar, use that. If ambiguous, default to USD.
+- Identify payment method and last 4 digits of card if mentioned
+- If any field is not present, use reasonable defaults (empty string for text, 0 for numbers)
+- For dates, use YYYY-MM-DD format
+- For times, use HH:MM format (24-hour)
+- All monetary amounts should be numbers (not strings)
+- The merchant name should be the company/store name`, contextLabel, bodyText)
+
+	if receivedAt != nil {
+		prompt += fmt.Sprintf(`
+- IMPORTANT: This document was received on %s. The receipt/transaction date MUST be on or before this date. Never produce a date in the future relative to the received date.`, receivedAt.Format("2006-01-02"))
+	}
+
+	reqBody := map[string]interface{}{
+		"model": "gpt-4o",
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type": "text",
+						"text": prompt,
+					},
+				},
+			},
+		},
+		"response_format": map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name":   "receipt_extraction",
+				"strict": true,
+				"schema": schema,
+			},
+		},
+		"temperature": 0.1,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
+	}
+
+	respBytes, err := s.doRequest(ctx, bodyBytes)
+	if err != nil {
+		return &domain.OCRResult{Error: err.Error()}
+	}
+
+	var completion struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBytes, &completion); err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("decode completion: %v", err)}
+	}
+	if completion.Error != nil {
+		return &domain.OCRResult{Error: completion.Error.Message}
+	}
+	if len(completion.Choices) == 0 {
+		return &domain.OCRResult{Error: "no choices in OpenAI response"}
+	}
+
+	var data openAIReceiptData
+	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &data); err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("decode receipt data: %v", err)}
+	}
+
+	slog.Info("[OpenAI] successfully parsed text receipt",
+		"merchant", data.MerchantName,
+		"total", data.Total,
+		"items", len(data.LineItems),
+	)
+
+	lineItems := make([]domain.LineItem, 0, len(data.LineItems))
+	for _, item := range data.LineItems {
+		unitPrice := item.UnitPrice
+		if unitPrice == 0 && item.Quantity != 0 {
+			unitPrice = item.TotalPrice / item.Quantity
+		}
+		lineItems = append(lineItems, domain.LineItem{
+			Description: item.Description,
+			Quantity:    item.Quantity,
+			UnitPrice:   unitPrice,
+			Price:       item.TotalPrice,
+		})
+	}
+
+	// Build a human-readable raw text summary (same format as ParseImage).
+	cur := data.Currency
+	if cur == "" {
+		cur = "USD"
+	}
+	var rawBuf bytes.Buffer
+	fmt.Fprintf(&rawBuf, "Merchant: %s\n", data.MerchantName)
+	fmt.Fprintf(&rawBuf, "Date: %s\n", data.TransactionDate)
+	fmt.Fprintf(&rawBuf, "Time: %s\n", data.TransactionTime)
+	fmt.Fprintf(&rawBuf, "Subtotal: %.2f %s\n", data.Subtotal, cur)
+	fmt.Fprintf(&rawBuf, "Tax: %.2f %s\n", data.Tax, cur)
+	fmt.Fprintf(&rawBuf, "Tip: %.2f %s\n", data.Tip, cur)
+	fmt.Fprintf(&rawBuf, "Total: %.2f %s\n", data.Total, cur)
+	rawBuf.WriteString("Items:\n")
+	for _, item := range lineItems {
+		fmt.Fprintf(&rawBuf, "%.gx %s - %.2f %s\n", item.Quantity, item.Description, item.Price, cur)
+	}
+
+	subtotal := data.Subtotal
+	tax := data.Tax
+	tip := data.Tip
+	total := data.Total
+
+	return &domain.OCRResult{
+		RawText:         rawBuf.String(),
+		LineItems:       lineItems,
+		MerchantName:    data.MerchantName,
+		MerchantAddress: data.MerchantAddress,
+		TransactionDate: data.TransactionDate,
+		TransactionTime: data.TransactionTime,
+		Subtotal:        &subtotal,
+		Tax:             &tax,
+		Tip:             &tip,
+		Total:           &total,
+		Currency:        data.Currency,
+		PaymentMethod:   data.PaymentMethod,
+		LastFourDigits:  data.LastFourDigits,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AI-suggested matching (v2: deterministic-first, LLM only for merchant disambiguation)
+// ---------------------------------------------------------------------------
+
+// MatchSuggestion represents a single receipt-to-transaction match decision.
+type MatchSuggestion struct {
+	ReceiptID     string  `json:"receipt_id"`
+	TransactionID string  `json:"transaction_id"`
+	Confidence    float64 `json:"confidence"`
+	MatchType     string  `json:"match_type"` // "matched" (>=0.85) or "suggested" (0.70-0.85)
+	Reason        string  `json:"reason"`
+	Flag          string  `json:"flag,omitempty"` // fx_suspected, amount_mismatch, date_mismatch, clean
+}
+
+// MerchantDisambiguationResult is the LLM response for merchant name comparison.
+type MerchantDisambiguationResult struct {
+	SameBusiness bool    `json:"same_business"`
+	Confidence   float64 `json:"confidence"`
+	Reason       string  `json:"reason"`
+}
+
+// DisambiguateMerchant asks the LLM a simple yes/no question: are these two
+// merchant names the same business? This is a focused, cheap call that replaces
+// the old full-matching EvaluateCandidates prompt.
+func (s *OpenAIService) DisambiguateMerchant(ctx context.Context, receiptMerchant, txMerchant, txName string) (*MerchantDisambiguationResult, error) {
+	if s.apiKey == "" {
+		return nil, fmt.Errorf("OpenAI API key not configured")
+	}
+
+	// Build the transaction side — include both merchant and name if different.
+	txSide := txMerchant
+	if txName != "" && txName != txMerchant {
+		txSide = fmt.Sprintf("%s (also shown as: %s)", txMerchant, txName)
+	}
+	if txMerchant == "" {
+		txSide = txName
+	}
+
+	prompt := fmt.Sprintf(`You are a merchant name matching engine. Determine if these two names refer to the SAME business.
+
+Receipt merchant: "%s"
+Bank transaction merchant: "%s"
+
+Rules:
+- Ignore casing, punctuation, prefixes like "SQ *", "TST *", "AplPay", "OPENAI *CHATGPT SUBS".
+- Common abbreviations are fine: "AMZN" = "Amazon", "SBUX" = "Starbucks", "UBER" = "Uber Technologies".
+- HARD RULE: Different companies are NEVER the same, even if names share words.
+  Examples of DIFFERENT businesses: "Apple" != "Applebee's", "Post Bar" != "US Post Office",
+  "CVS" != "Target", "Netflix" != "Spotify", "DTE Energy" != "Spotify".
+- When in doubt, say false. A wrong "true" is much worse than a wrong "false".
+
+Respond with a JSON object.`, receiptMerchant, txSide)
+
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"same_business": map[string]string{"type": "boolean", "description": "true if the two names refer to the same business"},
+			"confidence":    map[string]string{"type": "number", "description": "Confidence 0.0-1.0"},
+			"reason":        map[string]string{"type": "string", "description": "Brief explanation"},
+		},
+		"required":             []string{"same_business", "confidence", "reason"},
+		"additionalProperties": false,
+	}
+
+	reqBody := map[string]interface{}{
+		"model": "gpt-4o-mini",
+		"messages": []map[string]interface{}{
+			{"role": "user", "content": []map[string]interface{}{{"type": "text", "text": prompt}}},
+		},
+		"response_format": map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name":   "merchant_disambiguation",
+				"strict": true,
+				"schema": schema,
+			},
+		},
+		"temperature": 0.0,
+		"max_tokens":  256,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	respBytes, err := s.doRequest(ctx, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	var completion struct {
+		Choices []struct {
+			Message struct{ Content string `json:"content"` } `json:"message"`
+		} `json:"choices"`
+		Error *struct{ Message string `json:"message"` } `json:"error"`
+	}
+	if err := json.Unmarshal(respBytes, &completion); err != nil {
+		return nil, fmt.Errorf("decode completion: %w", err)
+	}
+	if completion.Error != nil {
+		return nil, fmt.Errorf("openai error: %s", completion.Error.Message)
+	}
+	if len(completion.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in OpenAI response")
+	}
+
+	var result MerchantDisambiguationResult
+	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &result); err != nil {
+		return nil, fmt.Errorf("decode disambiguation: %w", err)
+	}
+
+	return &result, nil
+}
+
+// CorrectCategory asks the LLM whether receipt line items suggest a different
+// Plaid PFC category than what was assigned. Uses gpt-4o-mini for cost efficiency.
+func (s *OpenAIService) CorrectCategory(ctx context.Context, lineItems []domain.LineItem, currentPrimary, currentDetailed string) (*domain.CategoryCorrectionResult, error) {
+	if s.apiKey == "" {
+		return nil, fmt.Errorf("OpenAI API key not configured")
+	}
+
+	var descriptions []string
+	for _, li := range lineItems {
+		if li.Description != "" {
+			desc := li.Description
+			if li.Quantity > 1 {
+				desc = fmt.Sprintf("%s x%.0f", li.Description, li.Quantity)
+			}
+			descriptions = append(descriptions, desc)
+			if len(descriptions) >= 15 {
+				break
+			}
+		}
+	}
+
+	prompt := fmt.Sprintf(`You are a transaction category classifier. A bank categorized this transaction as "%s" (detailed: "%s").
+
+Here are the actual items purchased according to the receipt:
+%s
+
+Plaid PFC primary categories: FOOD_AND_DRINK, TRANSPORTATION, GENERAL_MERCHANDISE, ENTERTAINMENT, MEDICAL, PERSONAL_CARE, GENERAL_SERVICES, GOVERNMENT_AND_NON_PROFIT, HOME_IMPROVEMENT, RENT_AND_UTILITIES, TRAVEL, TRANSFER_IN, TRANSFER_OUT, LOAN_PAYMENTS, BANK_FEES, INCOME.
+
+Based on what was ACTUALLY purchased:
+1. Is the bank's category "%s" correct for these items?
+2. If not, what should the correct primary and detailed categories be?
+
+Rules:
+- Only suggest a correction if the items clearly belong to a DIFFERENT category.
+- If the bank category seems reasonable, say should_correct=false.
+- Use the Plaid PFC taxonomy for category names.
+- The detailed category format is PRIMARY_SUBCATEGORY (e.g., FOOD_AND_DRINK_GROCERIES, FOOD_AND_DRINK_RESTAURANT, TRANSPORTATION_GAS).
+
+Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(descriptions, "\n"), currentPrimary)
+
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"should_correct":         map[string]interface{}{"type": "boolean", "description": "true if the bank category is wrong"},
+			"corrected_pfc_primary":  map[string]interface{}{"type": "string", "description": "Correct primary category"},
+			"corrected_pfc_detailed": map[string]interface{}{"type": "string", "description": "Correct detailed category"},
+			"reason":                 map[string]interface{}{"type": "string", "description": "Brief explanation"},
+		},
+		"required":             []string{"should_correct", "corrected_pfc_primary", "corrected_pfc_detailed", "reason"},
+		"additionalProperties": false,
+	}
+
+	reqBody := map[string]interface{}{
+		"model": "gpt-4o-mini",
+		"messages": []map[string]interface{}{
+			{"role": "user", "content": []map[string]interface{}{{"type": "text", "text": prompt}}},
+		},
+		"response_format": map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name":   "category_correction",
+				"strict": true,
+				"schema": schema,
+			},
+		},
+		"temperature": 0.0,
+		"max_tokens":  256,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	respBytes, err := s.doRequest(ctx, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	var completion struct {
+		Choices []struct {
+			Message struct{ Content string `json:"content"` } `json:"message"`
+		} `json:"choices"`
+		Error *struct{ Message string `json:"message"` } `json:"error"`
+	}
+	if err := json.Unmarshal(respBytes, &completion); err != nil {
+		return nil, fmt.Errorf("decode completion: %w", err)
+	}
+	if completion.Error != nil {
+		return nil, fmt.Errorf("openai error: %s", completion.Error.Message)
+	}
+	if len(completion.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in OpenAI response")
+	}
+
+	var result domain.CategoryCorrectionResult
+	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &result); err != nil {
+		return nil, fmt.Errorf("decode category correction: %w", err)
+	}
+	result.Source = "llm"
+	return &result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Text extraction helpers (used as fallback when OpenAI returns raw text only)
+// ---------------------------------------------------------------------------
+
+var (
+	totalPattern = regexp.MustCompile(`(?i)(?:grand\s+total|total\s+amount|total\s+due|amount\s+due|order\s+total|total)[^\d\n]*\$?([\d]+\.[\d]{2})`)
+	datePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(\d{1,2}/\d{1,2}/\d{4})`),
+		regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`),
+		regexp.MustCompile(`(\d{1,2}-\d{1,2}-\d{4})`),
+	}
+)
+
+// ExtractTotal extracts the total amount from raw receipt text.
+func ExtractTotal(rawText string) *float64 {
+	if rawText == "" {
+		return nil
+	}
+	lines := strings.Split(rawText, "\n")
+	var lastTotal *float64
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		upper := strings.ToUpper(line)
+		if strings.Contains(upper, "SUBTOTAL") || strings.Contains(upper, "SUB TOTAL") {
+			continue
+		}
+		if m := totalPattern.FindStringSubmatch(line); m != nil {
+			v, err := strconv.ParseFloat(m[1], 64)
+			if err == nil {
+				lastTotal = &v
+			}
+		}
+	}
+	return lastTotal
+}
+
+// ExtractDate extracts a date from raw receipt text.
+func ExtractDate(rawText string) *time.Time {
+	if rawText == "" {
+		return nil
+	}
+	for _, pat := range datePatterns {
+		if m := pat.FindStringSubmatch(rawText); m != nil {
+			dateStr := m[1]
+			for _, layout := range []string{"01/02/2006", "2006-01-02", "01-02-2006"} {
+				if t, err := time.Parse(layout, dateStr); err == nil {
+					return &t
+				}
+			}
+		}
+	}
+	return nil
+}
