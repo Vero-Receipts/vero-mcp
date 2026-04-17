@@ -375,7 +375,7 @@ func TestReceiptRepo_CountUnmatched(t *testing.T) {
 	}
 }
 
-func TestReceiptRepo_ExistsDuplicate(t *testing.T) {
+func TestReceiptRepo_FindHardDuplicate(t *testing.T) {
 	db := setupTestDB(t)
 	userRepo := NewUserRepo(db, DialectSQLite)
 	receiptRepo := NewReceiptRepo(db, DialectSQLite)
@@ -389,34 +389,202 @@ func TestReceiptRepo_ExistsDuplicate(t *testing.T) {
 	merchant := "Starbucks"
 	total := 5.50
 	date := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
+	hash := "deadbeef"
+	gmailID := "msg-abc-123"
+	orderID := "ORD-987"
+	mkey := "starbucks"
+
+	r := &domain.Receipt{
+		UserID:         user.ID,
+		MerchantName:   &merchant,
+		Total:          &total,
+		Date:           &date,
+		Source:         "upload",
+		Status:         "unmatched",
+		ContentHash:    &hash,
+		GmailMessageID: &gmailID,
+		OrderID:        &orderID,
+		MerchantKey:    &mkey,
+		LineItems:      json.RawMessage("[]"),
+	}
+	if err := receiptRepo.Create(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	t.Run("content_hash hit", func(t *testing.T) {
+		got, err := receiptRepo.FindHardDuplicate(ctx, user.ID, DedupKey{ContentHash: &hash})
+		if err != nil {
+			t.Fatalf("FindHardDuplicate: %v", err)
+		}
+		if got.ID != r.ID {
+			t.Errorf("expected %s, got %s", r.ID, got.ID)
+		}
+	})
+
+	t.Run("gmail_message_id hit", func(t *testing.T) {
+		got, err := receiptRepo.FindHardDuplicate(ctx, user.ID, DedupKey{GmailMessageID: &gmailID})
+		if err != nil {
+			t.Fatalf("FindHardDuplicate: %v", err)
+		}
+		if got.ID != r.ID {
+			t.Errorf("expected %s, got %s", r.ID, got.ID)
+		}
+	})
+
+	t.Run("order_id hit", func(t *testing.T) {
+		got, err := receiptRepo.FindHardDuplicate(ctx, user.ID, DedupKey{OrderID: &orderID})
+		if err != nil {
+			t.Fatalf("FindHardDuplicate: %v", err)
+		}
+		if got.ID != r.ID {
+			t.Errorf("expected %s, got %s", r.ID, got.ID)
+		}
+	})
+
+	t.Run("miss", func(t *testing.T) {
+		other := "nope"
+		_, err := receiptRepo.FindHardDuplicate(ctx, user.ID, DedupKey{ContentHash: &other})
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("no signals is no-op", func(t *testing.T) {
+		_, err := receiptRepo.FindHardDuplicate(ctx, user.ID, DedupKey{})
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+}
+
+func TestReceiptRepo_ListFiltersDuplicatesByDefault(t *testing.T) {
+	db := setupTestDB(t)
+	userRepo := NewUserRepo(db, DialectSQLite)
+	receiptRepo := NewReceiptRepo(db, DialectSQLite)
+	ctx := context.Background()
+
+	user := &domain.User{Name: "Test"}
+	if err := userRepo.Upsert(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	merchant := "Cloudflare"
+	total := 14.20
+	primary := &domain.Receipt{
+		UserID:       user.ID,
+		MerchantName: &merchant,
+		Total:        &total,
+		Source:       "email",
+		Status:       "matched",
+		LineItems:    json.RawMessage("[]"),
+	}
+	if err := receiptRepo.Create(ctx, primary); err != nil {
+		t.Fatalf("create primary: %v", err)
+	}
+
+	dup := &domain.Receipt{
+		UserID:       user.ID,
+		MerchantName: &merchant,
+		Total:        &total,
+		Source:       "email",
+		Status:       "duplicate",
+		DuplicateOf:  &primary.ID,
+		LineItems:    json.RawMessage("[]"),
+	}
+	if err := receiptRepo.Create(ctx, dup); err != nil {
+		t.Fatalf("create duplicate: %v", err)
+	}
+
+	// Default filter: only the primary is returned.
+	list, err := receiptRepo.FindByUserID(ctx, user.ID, domain.ReceiptFilter{})
+	if err != nil {
+		t.Fatalf("FindByUserID: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != primary.ID {
+		t.Errorf("expected only primary in list; got %d rows: %+v", len(list), list)
+	}
+
+	// CountUnmatched excludes the duplicate. The primary has no row in
+	// receipt_matches (we never created one), so it is still considered
+	// unmatched from CountUnmatched's perspective; the duplicate would
+	// double-count the real-world charge if not hidden.
+	count, err := receiptRepo.CountUnmatched(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnmatched: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 unmatched (primary visible, duplicate hidden), got %d", count)
+	}
+
+	// Override returns the duplicate too.
+	all, err := receiptRepo.FindByUserID(ctx, user.ID, domain.ReceiptFilter{IncludeDuplicates: true})
+	if err != nil {
+		t.Fatalf("FindByUserID with IncludeDuplicates: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 rows with IncludeDuplicates, got %d", len(all))
+	}
+}
+
+func TestReceiptRepo_FindSoftDuplicate(t *testing.T) {
+	db := setupTestDB(t)
+	userRepo := NewUserRepo(db, DialectSQLite)
+	receiptRepo := NewReceiptRepo(db, DialectSQLite)
+	ctx := context.Background()
+
+	user := &domain.User{Name: "Test"}
+	if err := userRepo.Upsert(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	merchant := "Cloudflare"
+	mkey := "cloudflare"
+	total := 14.20
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 
 	r := &domain.Receipt{
 		UserID:       user.ID,
 		MerchantName: &merchant,
+		MerchantKey:  &mkey,
 		Total:        &total,
-		Date:         &date,
-		Source:       "upload",
-		Status:       "unmatched",
+		Date:         &base,
+		Source:       "email",
+		Status:       "matched",
 		LineItems:    json.RawMessage("[]"),
 	}
 	if err := receiptRepo.Create(ctx, r); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	exists, err := receiptRepo.ExistsDuplicate(ctx, user.ID, "Starbucks", 5.50, date)
-	if err != nil {
-		t.Fatalf("exists duplicate: %v", err)
+	cases := []struct {
+		name    string
+		date    time.Time
+		window  int
+		wantHit bool
+	}{
+		{"exact date", base, 3, true},
+		{"+3 days within window", base.AddDate(0, 0, 3), 3, true},
+		{"-3 days within window", base.AddDate(0, 0, -3), 3, true},
+		{"+4 days outside window", base.AddDate(0, 0, 4), 3, false},
+		{"zero window exact", base, 0, true},
+		{"zero window +1", base.AddDate(0, 0, 1), 0, false},
 	}
-	if !exists {
-		t.Error("expected duplicate to exist")
-	}
-
-	exists, err = receiptRepo.ExistsDuplicate(ctx, user.ID, "Starbucks", 99.99, date)
-	if err != nil {
-		t.Fatalf("exists duplicate: %v", err)
-	}
-	if exists {
-		t.Error("expected no duplicate for different total")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := receiptRepo.FindSoftDuplicate(ctx, user.ID, mkey, total, tc.date, tc.window)
+			if tc.wantHit {
+				if err != nil {
+					t.Fatalf("expected hit, got err: %v", err)
+				}
+				if got.ID != r.ID {
+					t.Errorf("expected %s, got %s", r.ID, got.ID)
+				}
+			} else {
+				if !errors.Is(err, domain.ErrNotFound) {
+					t.Errorf("expected ErrNotFound, got %v", err)
+				}
+			}
+		})
 	}
 }
 

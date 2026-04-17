@@ -96,8 +96,37 @@ func (s *ReceiptService) ConvertCurrencyIfNeeded(ctx context.Context, receipt *d
 	)
 }
 
+// DedupOutcome reports which branch of the dedup pipeline produced the
+// returned receipt. Shared with plaid-wrapper's ExtendedReceiptService.
+type DedupOutcome int
+
+const (
+	// OutcomeCreated means a brand-new primary row was written.
+	OutcomeCreated DedupOutcome = iota
+	// OutcomeHardDuplicate means a Tier-1 signal matched an existing primary
+	// (content hash, gmail message id, or order id). No new row was written.
+	OutcomeHardDuplicate
+	// OutcomeSoftDuplicate means a Tier-2 signal matched (normalized merchant
+	// + amount + date window). A new row was written linked via duplicate_of.
+	OutcomeSoftDuplicate
+)
+
+// String returns a stable machine-readable label for the outcome, suitable
+// for use as an HTTP response discriminator (e.g. "exact_match").
+func (o DedupOutcome) String() string {
+	switch o {
+	case OutcomeHardDuplicate:
+		return "exact_match"
+	case OutcomeSoftDuplicate:
+		return "likely_duplicate"
+	default:
+		return "created"
+	}
+}
+
 type ScanResult struct {
 	Receipt *domain.Receipt `json:"receipt"`
+	Outcome DedupOutcome    `json:"-"`
 }
 
 // BatchScanResult holds the results of scanning multiple receipt images from a directory.

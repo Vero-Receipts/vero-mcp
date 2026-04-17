@@ -35,7 +35,8 @@ type ReceiptRepository interface {
 	FindWithoutThumbnails(ctx context.Context, offset, limit int) ([]domain.Receipt, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	CountUnmatched(ctx context.Context, userID uuid.UUID) (int, error)
-	ExistsDuplicate(ctx context.Context, userID uuid.UUID, merchantName string, total float64, date time.Time) (bool, error)
+	FindHardDuplicate(ctx context.Context, userID uuid.UUID, key DedupKey) (*domain.Receipt, error)
+	FindSoftDuplicate(ctx context.Context, userID uuid.UUID, merchantKey string, total float64, date time.Time, dateWindowDays int) (*domain.Receipt, error)
 }
 
 type ReceiptMatchRepository interface {

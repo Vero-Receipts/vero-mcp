@@ -12,6 +12,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/Vero-Receipts/vero-mcp/pkg/domain"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // scanner is the interface shared by *sql.Row and *sql.Rows.
@@ -35,7 +36,21 @@ var receiptCols = []string{
 	"merchant_name", "merchant_address", "total", "currency", "total_usd",
 	"subtotal", "tax", "tip", "payment_method", "last_four_digits",
 	"date", "transaction_time", "raw_text", "ocr_error", "line_items",
-	"source", "status", "created_at", "updated_at",
+	"source", "status",
+	"content_hash", "gmail_message_id", "order_id", "merchant_key", "duplicate_of",
+	"created_at", "updated_at",
+}
+
+// isUniqueViolation reports whether err is a Postgres 23505 unique constraint
+// error (as surfaced by pgx's stdlib driver via errors.As). SQLite does not
+// reach this path under current schema — partial unique indexes are
+// Postgres-only.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return true
+	}
+	return false
 }
 
 func prefixCols(prefix string, cols []string) []string {
@@ -71,6 +86,12 @@ func (r *ReceiptRepo) Create(ctx context.Context, rcpt *domain.Receipt) error {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	var duplicateOfStr *string
+	if rcpt.DuplicateOf != nil {
+		s := rcpt.DuplicateOf.String()
+		duplicateOfStr = &s
+	}
+
 	_, err := r.SQ.Insert("receipts").
 		Columns(receiptCols...).
 		Values(
@@ -81,10 +102,15 @@ func (r *ReceiptRepo) Create(ctx context.Context, rcpt *domain.Receipt) error {
 			rcpt.PaymentMethod, rcpt.LastFourDigits,
 			dateStr, rcpt.TransactionTime,
 			rcpt.RawText, rcpt.OCRError, string(lineItems),
-			rcpt.Source, rcpt.Status, now, now,
+			rcpt.Source, rcpt.Status,
+			rcpt.ContentHash, rcpt.GmailMessageID, rcpt.OrderID, rcpt.MerchantKey, duplicateOfStr,
+			now, now,
 		).
 		ExecContext(ctx)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: %s", domain.ErrUniqueViolation, err.Error())
+		}
 		return err
 	}
 
@@ -133,6 +159,10 @@ func (r *ReceiptRepo) FindByUserID(ctx context.Context, userID uuid.UUID, filter
 		From("receipts").
 		Where(sq.Eq{"user_id": userID.String()})
 
+	if !filter.IncludeDuplicates {
+		qb = qb.Where("duplicate_of IS NULL")
+	}
+
 	qb = applyReceiptFiltersSQ(qb, filter, "")
 	qb = qb.OrderBy(receiptOrderBySQ(filter, ""))
 
@@ -160,6 +190,10 @@ func (r *ReceiptRepo) FindByUserIDWithMatches(ctx context.Context, userID uuid.U
 		From("receipts r").
 		LeftJoin("receipt_matches rm ON rm.receipt_id = r.id").
 		Where(sq.Eq{"r.user_id": userID.String()})
+
+	if !filter.IncludeDuplicates {
+		qb = qb.Where("r.duplicate_of IS NULL")
+	}
 
 	qb = applyReceiptFiltersSQ(qb, filter, "r.")
 	if filter.MatchMethod != "" {
@@ -189,6 +223,7 @@ func (r *ReceiptRepo) FindUnmatchedValid(ctx context.Context, userID uuid.UUID) 
 		From("receipts").
 		Where(sq.Eq{"user_id": userID.String()}).
 		Where(sq.NotEq{"status": "error"}).
+		Where("duplicate_of IS NULL").
 		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE receipt_id = receipts.id)").
 		OrderBy("created_at DESC").
 		QueryContext(ctx)
@@ -222,6 +257,12 @@ func (r *ReceiptRepo) Update(ctx context.Context, rcpt *domain.Receipt) error {
 		dateStr = &s
 	}
 
+	var duplicateOfStr *string
+	if rcpt.DuplicateOf != nil {
+		s := rcpt.DuplicateOf.String()
+		duplicateOfStr = &s
+	}
+
 	res, err := r.SQ.Update("receipts").
 		Set("image_url", rcpt.ImageURL).
 		Set("image_path", rcpt.ImagePath).
@@ -243,6 +284,11 @@ func (r *ReceiptRepo) Update(ctx context.Context, rcpt *domain.Receipt) error {
 		Set("line_items", string(lineItems)).
 		Set("source", rcpt.Source).
 		Set("status", rcpt.Status).
+		Set("content_hash", rcpt.ContentHash).
+		Set("gmail_message_id", rcpt.GmailMessageID).
+		Set("order_id", rcpt.OrderID).
+		Set("merchant_key", rcpt.MerchantKey).
+		Set("duplicate_of", duplicateOfStr).
 		Set("updated_at", now).
 		Where(sq.Eq{"id": rcpt.ID.String()}).
 		ExecContext(ctx)
@@ -332,26 +378,105 @@ func (r *ReceiptRepo) CountUnmatched(ctx context.Context, userID uuid.UUID) (int
 		From("receipts").
 		Where(sq.Eq{"user_id": userID.String()}).
 		Where(sq.NotEq{"status": "error"}).
+		Where("duplicate_of IS NULL").
 		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE receipt_id = receipts.id)").
 		QueryRowContext(ctx).
 		Scan(&count)
 	return count, err
 }
 
-func (r *ReceiptRepo) ExistsDuplicate(ctx context.Context, userID uuid.UUID, merchantName string, total float64, date time.Time) (bool, error) {
-	dateStr := date.Format("2006-01-02")
-	var count int
-	err := r.SQ.Select("COUNT(*)").
+// DedupKey carries the Tier-1 hard-match signals for a receipt. Any field that
+// is non-nil contributes a branch to the FindHardDuplicate lookup. A hit on
+// any one signal is sufficient to treat the incoming receipt as a duplicate.
+type DedupKey struct {
+	ContentHash    *string
+	GmailMessageID *string
+	OrderID        *string
+}
+
+// HasAnySignal reports whether the key carries at least one non-nil signal.
+func (k DedupKey) HasAnySignal() bool {
+	return k.ContentHash != nil || k.GmailMessageID != nil || k.OrderID != nil
+}
+
+// FindHardDuplicate returns the existing primary receipt that matches any
+// Tier-1 signal in key (content_hash, gmail_message_id, or order_id) for the
+// given user. Duplicate rows (duplicate_of IS NOT NULL) are excluded so we
+// always return the primary. Returns ErrNotFound when no signal hits.
+func (r *ReceiptRepo) FindHardDuplicate(ctx context.Context, userID uuid.UUID, key DedupKey) (*domain.Receipt, error) {
+	if !key.HasAnySignal() {
+		return nil, domain.ErrNotFound
+	}
+
+	or := sq.Or{}
+	if key.ContentHash != nil {
+		or = append(or, sq.Eq{"content_hash": *key.ContentHash})
+	}
+	if key.GmailMessageID != nil {
+		or = append(or, sq.Eq{"gmail_message_id": *key.GmailMessageID})
+	}
+	if key.OrderID != nil {
+		or = append(or, sq.Eq{"order_id": *key.OrderID})
+	}
+
+	row := r.SQ.Select(receiptCols...).
 		From("receipts").
-		Where(sq.Eq{
-			"user_id":       userID.String(),
-			"merchant_name": merchantName,
-			"total":         total,
-		}).
-		Where(sq.Like{"CAST(date AS TEXT)": dateStr + "%"}).
-		QueryRowContext(ctx).
-		Scan(&count)
-	return count > 0, err
+		Where(sq.Eq{"user_id": userID.String()}).
+		Where("duplicate_of IS NULL").
+		Where(or).
+		OrderBy("created_at ASC").
+		Limit(1).
+		QueryRowContext(ctx)
+
+	rcpt, err := r.scanReceipt(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return rcpt, nil
+}
+
+// FindSoftDuplicate returns the existing primary receipt that matches the
+// Tier-2 soft-match key: same merchant_key, same total, and a date within the
+// given day window. The caller is responsible for computing merchant_key
+// (alias-aware normalization). On a tie the row with the "best" status
+// (matched > suggested > unmatched) and earliest created_at wins.
+func (r *ReceiptRepo) FindSoftDuplicate(ctx context.Context, userID uuid.UUID, merchantKey string, total float64, date time.Time, dateWindowDays int) (*domain.Receipt, error) {
+	if merchantKey == "" {
+		return nil, domain.ErrNotFound
+	}
+	if dateWindowDays < 0 {
+		dateWindowDays = 0
+	}
+
+	// Half-open range [lo, hiExclusive) — lets SQLite's lexicographic TEXT
+	// comparison treat an RFC3339 value like "2026-02-01T00:00:00Z" as
+	// on-date, and lets Postgres's DATE comparison work the same way.
+	lo := date.AddDate(0, 0, -dateWindowDays).Format("2006-01-02")
+	hiExclusive := date.AddDate(0, 0, dateWindowDays+1).Format("2006-01-02")
+
+	row := r.SQ.Select(receiptCols...).
+		From("receipts").
+		Where(sq.Eq{"user_id": userID.String()}).
+		Where("duplicate_of IS NULL").
+		Where(sq.Eq{"merchant_key": merchantKey}).
+		Where(sq.Eq{"total": total}).
+		Where(sq.GtOrEq{"date": lo}).
+		Where(sq.Lt{"date": hiExclusive}).
+		OrderBy("CASE status WHEN 'matched' THEN 0 WHEN 'suggested' THEN 1 WHEN 'unmatched' THEN 2 ELSE 3 END ASC", "created_at ASC").
+		Limit(1).
+		QueryRowContext(ctx)
+
+	rcpt, err := r.scanReceipt(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return rcpt, nil
 }
 
 // --- scan helpers ---
@@ -362,13 +487,16 @@ func (r *ReceiptRepo) scanReceipt(s scanner) (*domain.Receipt, error) {
 	var createdAt, updatedAt ScannableTime
 	var dateVal ScannableTime
 	var lineItemsStr sql.NullString
+	var duplicateOfStr sql.NullString
 
 	err := s.Scan(
 		&idStr, &userIDStr, &rcpt.ImageURL, &rcpt.ImagePath, &rcpt.ThumbnailURL,
 		&rcpt.MerchantName, &rcpt.MerchantAddress, &rcpt.Total, &rcpt.Currency, &rcpt.TotalUSD,
 		&rcpt.Subtotal, &rcpt.Tax, &rcpt.Tip, &rcpt.PaymentMethod, &rcpt.LastFourDigits,
 		&dateVal, &rcpt.TransactionTime, &rcpt.RawText, &rcpt.OCRError, &lineItemsStr,
-		&rcpt.Source, &rcpt.Status, &createdAt, &updatedAt,
+		&rcpt.Source, &rcpt.Status,
+		&rcpt.ContentHash, &rcpt.GmailMessageID, &rcpt.OrderID, &rcpt.MerchantKey, &duplicateOfStr,
+		&createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -388,6 +516,10 @@ func (r *ReceiptRepo) scanReceipt(s scanner) (*domain.Receipt, error) {
 	} else {
 		rcpt.LineItems = json.RawMessage("[]")
 	}
+	if duplicateOfStr.Valid && duplicateOfStr.String != "" {
+		id := ScanUUID(duplicateOfStr.String)
+		rcpt.DuplicateOf = &id
+	}
 
 	return &rcpt, nil
 }
@@ -398,6 +530,7 @@ func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch,
 	var createdAt, updatedAt ScannableTime
 	var dateVal ScannableTime
 	var lineItemsStr sql.NullString
+	var duplicateOfStr sql.NullString
 
 	// match fields — all nullable from LEFT JOIN
 	var matchID, matchReceiptID, matchTxnID, matchAccountID sql.NullString
@@ -410,7 +543,9 @@ func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch,
 		&rwm.MerchantName, &rwm.MerchantAddress, &rwm.Total, &rwm.Currency, &rwm.TotalUSD,
 		&rwm.Subtotal, &rwm.Tax, &rwm.Tip, &rwm.PaymentMethod, &rwm.LastFourDigits,
 		&dateVal, &rwm.TransactionTime, &rwm.RawText, &rwm.OCRError, &lineItemsStr,
-		&rwm.Source, &rwm.Status, &createdAt, &updatedAt,
+		&rwm.Source, &rwm.Status,
+		&rwm.ContentHash, &rwm.GmailMessageID, &rwm.OrderID, &rwm.MerchantKey, &duplicateOfStr,
+		&createdAt, &updatedAt,
 		&matchID, &matchReceiptID, &matchTxnID, &matchAccountID,
 		&matchConfidence, &matchMethod, &matchReason, &matchedAt,
 	)
@@ -431,6 +566,10 @@ func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch,
 		rwm.LineItems = json.RawMessage(lineItemsStr.String)
 	} else {
 		rwm.LineItems = json.RawMessage("[]")
+	}
+	if duplicateOfStr.Valid && duplicateOfStr.String != "" {
+		id := ScanUUID(duplicateOfStr.String)
+		rwm.DuplicateOf = &id
 	}
 
 	if matchID.Valid {
