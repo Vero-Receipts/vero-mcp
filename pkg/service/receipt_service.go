@@ -127,6 +127,11 @@ func (o DedupOutcome) String() string {
 type ScanResult struct {
 	Receipt *domain.Receipt `json:"receipt"`
 	Outcome DedupOutcome    `json:"-"`
+	// Primary is populated only when Outcome is OutcomeSoftDuplicate. It
+	// carries the existing primary receipt that the new row was linked
+	// against, so UIs can show the user which receipt we think this is a
+	// duplicate of ("$14.20 Cloudflare from Feb 1").
+	Primary *domain.Receipt `json:"primary,omitempty"`
 }
 
 // BatchScanResult holds the results of scanning multiple receipt images from a directory.
@@ -602,6 +607,35 @@ func (s *ReceiptService) Delete(ctx context.Context, userID, receiptID uuid.UUID
 	}
 
 	return s.receiptRepo.Delete(ctx, receiptID)
+}
+
+// PromoteDuplicate converts a soft-duplicate row into a standalone primary.
+// Used when the user reviews a likely-duplicate receipt and confirms it is
+// actually a distinct charge that should be kept. Clears the `duplicate_of`
+// link, resets status to "unmatched", and runs the auto-match pipeline so
+// the promoted receipt can find its own transaction.
+//
+// Returns ErrBadRequest if the receipt isn't currently a duplicate.
+func (s *ReceiptService) PromoteDuplicate(ctx context.Context, userID, receiptID uuid.UUID) (*domain.Receipt, error) {
+	receipt, err := s.receiptRepo.FindByID(ctx, receiptID)
+	if err != nil {
+		return nil, err
+	}
+	if receipt.UserID != userID {
+		return nil, domain.ErrForbidden
+	}
+	if receipt.DuplicateOf == nil {
+		return nil, fmt.Errorf("receipt is not a duplicate: %w", domain.ErrBadRequest)
+	}
+
+	receipt.DuplicateOf = nil
+	receipt.Status = "unmatched"
+	if err := s.receiptRepo.Update(ctx, receipt); err != nil {
+		return nil, fmt.Errorf("clear duplicate_of: %w", err)
+	}
+
+	s.TryMatch(ctx, userID, receipt)
+	return receipt, nil
 }
 
 func (s *ReceiptService) Match(ctx context.Context, userID, receiptID uuid.UUID, transactionID, accountID string) error {
