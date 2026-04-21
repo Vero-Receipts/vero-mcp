@@ -30,6 +30,11 @@ type Receipt struct {
 	LineItems       json.RawMessage `json:"line_items"`
 	Source          string          `json:"source"`
 	Status          string          `json:"status"`
+	ContentHash     *string         `json:"content_hash,omitempty"`
+	GmailMessageID  *string         `json:"gmail_message_id,omitempty"`
+	OrderID         *string         `json:"order_id,omitempty"`
+	MerchantKey     *string         `json:"merchant_key,omitempty"`
+	DuplicateOf     *uuid.UUID      `json:"duplicate_of,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
@@ -67,14 +72,15 @@ type ReceiptWithMatch struct {
 }
 
 type ReceiptFilter struct {
-	Status      string   // "matched", "unmatched", "suggested", or "" for all
-	Source      string   // "upload", "email", or "" for all
-	MatchMethod string   // "auto", "manual", "suggested", "confirmed", or "" for all
-	Search      string   // text search across merchant_name + line_items
-	SortBy      string   // "date", "amount", "merchant", "created_at" (default)
-	SortOrder   string   // "asc" or "desc" (default)
-	DateFrom    string   // YYYY-MM-DD
-	DateTo      string   // YYYY-MM-DD
-	AmountMin   *float64 // minimum amount filter
-	AmountMax   *float64 // maximum amount filter
+	Status            string   // "matched", "unmatched", "suggested", or "" for all
+	Source            string   // "upload", "email", or "" for all
+	MatchMethod       string   // "auto", "manual", "suggested", "confirmed", or "" for all
+	Search            string   // text search across merchant_name + line_items
+	SortBy            string   // "date", "amount", "merchant", "created_at" (default)
+	SortOrder         string   // "asc" or "desc" (default)
+	DateFrom          string   // YYYY-MM-DD
+	DateTo            string   // YYYY-MM-DD
+	AmountMin         *float64 // minimum amount filter
+	AmountMax         *float64 // maximum amount filter
+	IncludeDuplicates bool     // when false (default), hides rows with duplicate_of set
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Vero-Receipts/vero-mcp/pkg/domain"
+	"github.com/Vero-Receipts/vero-mcp/pkg/repository"
 	"github.com/google/uuid"
 )
 
@@ -125,8 +126,11 @@ func (r *fakeReceiptRepo) Delete(context.Context, uuid.UUID) error { return nil 
 func (r *fakeReceiptRepo) CountUnmatched(context.Context, uuid.UUID) (int, error) {
 	return 0, nil
 }
-func (r *fakeReceiptRepo) ExistsDuplicate(_ context.Context, _ uuid.UUID, _ string, _ float64, _ time.Time) (bool, error) {
-	return false, nil
+func (r *fakeReceiptRepo) FindHardDuplicate(_ context.Context, _ uuid.UUID, _ repository.DedupKey) (*domain.Receipt, error) {
+	return nil, domain.ErrNotFound
+}
+func (r *fakeReceiptRepo) FindSoftDuplicate(_ context.Context, _ uuid.UUID, _ string, _ float64, _ time.Time, _ int) (*domain.Receipt, error) {
+	return nil, domain.ErrNotFound
 }
 
 // ---------------------------------------------------------------------------

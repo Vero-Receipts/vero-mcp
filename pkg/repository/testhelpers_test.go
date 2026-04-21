@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -31,12 +32,27 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("enable foreign keys: %v", err)
 	}
 
-	sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir(), "001_initial.sql"))
+	entries, err := os.ReadDir(migrationsDir())
 	if err != nil {
-		t.Fatalf("read migration: %v", err)
+		t.Fatalf("read migrations dir: %v", err)
 	}
-	if _, err := db.Exec(string(sqlBytes)); err != nil {
-		t.Fatalf("execute migration: %v", err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".sql" {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	// Filenames are NNN_* so lexicographic order == migration order.
+	sort.Strings(names)
+	for _, name := range names {
+		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir(), name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if _, err := db.Exec(string(sqlBytes)); err != nil {
+			t.Fatalf("execute %s: %v", name, err)
+		}
 	}
 
 	return db
