@@ -136,6 +136,16 @@ func (r *MerchantRepo) UpdateLogoURL(ctx context.Context, merchantID uuid.UUID, 
 	return err
 }
 
+func (r *MerchantRepo) UpdateDomain(ctx context.Context, merchantID uuid.UUID, domain string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.SQ.Update("merchants").
+		Set("domain", domain).
+		Set("updated_at", now).
+		Where(sq.Eq{"id": merchantID.String()}).
+		ExecContext(ctx)
+	return err
+}
+
 func scanMerchant(row scanner) (*domain.Merchant, error) {
 	var m domain.Merchant
 	var idStr string

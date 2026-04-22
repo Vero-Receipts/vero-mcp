@@ -80,6 +80,7 @@ type MerchantRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*domain.Merchant, error)
 	FindByNormalizedKey(ctx context.Context, key string) (*domain.Merchant, error)
 	UpdateLogoURL(ctx context.Context, merchantID uuid.UUID, cdnURL string) error
+	UpdateDomain(ctx context.Context, merchantID uuid.UUID, domain string) error
 }
 
 type MatchAuditRepository interface {
