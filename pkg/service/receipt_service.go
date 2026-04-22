@@ -97,7 +97,7 @@ func (s *ReceiptService) ConvertCurrencyIfNeeded(ctx context.Context, receipt *d
 }
 
 // DedupOutcome reports which branch of the dedup pipeline produced the
-// returned receipt. Shared with plaid-wrapper's ExtendedReceiptService.
+// returned receipt.
 type DedupOutcome int
 
 const (

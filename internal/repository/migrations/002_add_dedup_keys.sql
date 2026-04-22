@@ -1,8 +1,4 @@
--- 002_add_dedup_keys.sql - Two-tier receipt deduplication (SQLite mirror of
--- plaid-wrapper migration 000032). The production Postgres version lives at
--- plaid-wrapper/migrations/000032_add_receipt_dedup_keys.up.sql and carries
--- the production backfill logic; this file just widens the local SQLite
--- schema so the same ReceiptRepo code compiles and runs against both.
+-- 002_add_dedup_keys.sql - Two-tier receipt deduplication
 
 ALTER TABLE receipts ADD COLUMN content_hash     TEXT;
 ALTER TABLE receipts ADD COLUMN gmail_message_id TEXT;

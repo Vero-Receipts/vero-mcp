@@ -1,4 +1,4 @@
--- SQLite counterpart to plaid-wrapper's 000033_normalize_merchants.
+-- 003_normalize_merchants.sql
 
 CREATE TABLE IF NOT EXISTS merchants (
     id               TEXT PRIMARY KEY,
@@ -11,17 +11,6 @@ CREATE TABLE IF NOT EXISTS merchants (
     updated_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS merchant_logo_jobs (
-    merchant_id   TEXT PRIMARY KEY REFERENCES merchants(id) ON DELETE CASCADE,
-    status        TEXT NOT NULL DEFAULT 'pending',
-    source        TEXT,
-    attempts      INTEGER NOT NULL DEFAULT 0,
-    last_error    TEXT,
-    attempted_at  TEXT,
-    updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_merchant_logo_jobs_status ON merchant_logo_jobs(status);
 
 -- Backfill merchants from existing transaction_cache rows.
 -- SQLite lacks gen_random_uuid(); hex(randomblob(...)) yields a UUIDv4-shaped string.

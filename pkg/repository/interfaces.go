@@ -76,26 +76,10 @@ type MerchantRepository interface {
 	// it's the authoritative identity — matches across merchant-name
 	// variations that would otherwise fork into separate rows. When absent,
 	// we fall back to matching by normalized canonical name.
-	//
-	// logoURL seeds merchants.logo_cdn_url only when no value is currently
-	// set — so a Plaid URL populates new merchants, while LogoService's later
-	// UpdateLogoURL replaces them with the self-hosted DO CDN URL.
 	Upsert(ctx context.Context, canonicalName string, websiteDomain, logoURL, plaidEntityID *string) (*domain.Merchant, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*domain.Merchant, error)
 	FindByNormalizedKey(ctx context.Context, key string) (*domain.Merchant, error)
-	FindLogoJobCandidates(ctx context.Context, limit int) ([]MerchantLogoCandidate, error)
 	UpdateLogoURL(ctx context.Context, merchantID uuid.UUID, cdnURL string) error
-	UpsertLogoJob(ctx context.Context, merchantID uuid.UUID, status, source string, attempts int, lastError *string) error
-}
-
-// MerchantLogoCandidate is a merchant row that the logo resolver should try next.
-// ExistingLogoURL, when set, is a Plaid-provided URL that the resolver should
-// download directly and re-host rather than going through Logo.dev.
-type MerchantLogoCandidate struct {
-	MerchantID      uuid.UUID
-	CanonicalName   string
-	WebsiteDomain   *string
-	ExistingLogoURL *string
 }
 
 type MatchAuditRepository interface {

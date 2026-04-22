@@ -126,66 +126,12 @@ func (r *MerchantRepo) FindByNormalizedKey(ctx context.Context, key string) (*do
 	return scanMerchant(row)
 }
 
-// FindLogoJobCandidates returns merchants that need a logo resolved. A row
-// qualifies when its logo_cdn_url is null OR its merchant_logo_jobs status is
-// not 'ready' / 'failed'. Ordered by (never-attempted first, then oldest).
-// FindLogoJobCandidates returns merchants that still need resolver work. A row
-// qualifies when it has no merchant_logo_jobs entry yet (first-time seeding),
-// or its job isn't in a terminal state (ready / failed). Ordered so
-// never-attempted rows go first.
-func (r *MerchantRepo) FindLogoJobCandidates(ctx context.Context, limit int) ([]MerchantLogoCandidate, error) {
-	rows, err := r.SQ.Select("m.id", "m.canonical_name", "m.domain", "m.logo_cdn_url").
-		From("merchants m").
-		LeftJoin("merchant_logo_jobs j ON j.merchant_id = m.id").
-		Where(sq.Or{
-			sq.Eq{"j.merchant_id": nil},
-			sq.And{
-				sq.NotEq{"j.status": "ready"},
-				sq.NotEq{"j.status": "failed"},
-			},
-		}).
-		OrderBy("j.attempted_at ASC NULLS FIRST", "m.created_at ASC").
-		Limit(uint64(limit)).
-		QueryContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []MerchantLogoCandidate
-	for rows.Next() {
-		var c MerchantLogoCandidate
-		var idStr string
-		if err := rows.Scan(&idStr, &c.CanonicalName, &c.WebsiteDomain, &c.ExistingLogoURL); err != nil {
-			return nil, err
-		}
-		c.MerchantID = ScanUUID(idStr)
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
 func (r *MerchantRepo) UpdateLogoURL(ctx context.Context, merchantID uuid.UUID, cdnURL string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := r.SQ.Update("merchants").
 		Set("logo_cdn_url", cdnURL).
 		Set("updated_at", now).
 		Where(sq.Eq{"id": merchantID.String()}).
-		ExecContext(ctx)
-	return err
-}
-
-func (r *MerchantRepo) UpsertLogoJob(ctx context.Context, merchantID uuid.UUID, status, source string, attempts int, lastError *string) error {
-	_, err := r.SQ.Insert("merchant_logo_jobs").
-		Columns("merchant_id", "status", "source", "attempts", "last_error", "attempted_at", "updated_at").
-		Values(merchantID.String(), status, source, attempts, lastError, sq.Expr("CURRENT_TIMESTAMP"), sq.Expr("CURRENT_TIMESTAMP")).
-		Suffix(`ON CONFLICT (merchant_id) DO UPDATE SET
-			status       = EXCLUDED.status,
-			source       = EXCLUDED.source,
-			attempts     = EXCLUDED.attempts,
-			last_error   = EXCLUDED.last_error,
-			attempted_at = EXCLUDED.attempted_at,
-			updated_at   = EXCLUDED.updated_at`).
 		ExecContext(ctx)
 	return err
 }
