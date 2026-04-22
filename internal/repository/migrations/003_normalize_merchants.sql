@@ -1,13 +1,14 @@
 -- SQLite counterpart to plaid-wrapper's 000033_normalize_merchants.
 
 CREATE TABLE IF NOT EXISTS merchants (
-    id              TEXT PRIMARY KEY,
-    canonical_name  TEXT NOT NULL,
-    normalized_key  TEXT NOT NULL UNIQUE,
-    domain          TEXT,
-    logo_cdn_url    TEXT,
-    created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id               TEXT PRIMARY KEY,
+    canonical_name   TEXT NOT NULL,
+    normalized_key   TEXT NOT NULL UNIQUE,
+    plaid_entity_id  TEXT UNIQUE,
+    domain           TEXT,
+    logo_cdn_url     TEXT,
+    created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS merchant_logo_jobs (

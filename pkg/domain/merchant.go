@@ -14,6 +14,7 @@ type Merchant struct {
 	ID             uuid.UUID `json:"id"`
 	CanonicalName  string    `json:"canonical_name"`
 	NormalizedKey  string    `json:"normalized_key"`
+	PlaidEntityID  *string   `json:"plaid_entity_id,omitempty"`
 	Domain         *string   `json:"domain,omitempty"`
 	LogoCDNURL     *string   `json:"logo_cdn_url,omitempty"`
 	CreatedAt      time.Time `json:"created_at,omitempty"`

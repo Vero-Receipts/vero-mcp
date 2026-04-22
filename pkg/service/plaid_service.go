@@ -59,6 +59,8 @@ func NewPlaidService(
 
 // resolveMerchantID upserts a merchant and returns its ID. Returns nil when
 // the merchant name is empty — the transaction will land with merchant_id NULL.
+// When Plaid provides a merchant_entity_id we use it as the authoritative key
+// so name variations collapse onto a single merchant row.
 func (s *PlaidService) resolveMerchantID(ctx context.Context, tx plaid.Transaction) *uuid.UUID {
 	name := tx.GetMerchantName()
 	if name == "" {
@@ -75,7 +77,12 @@ func (s *PlaidService) resolveMerchantID(ctx context.Context, tx plaid.Transacti
 		logo = &l
 	}
 
-	m, err := s.merchantRepo.Upsert(ctx, name, website, logo)
+	var entityID *string
+	if e, ok := tx.GetMerchantEntityIdOk(); ok && e != nil && *e != "" {
+		entityID = e
+	}
+
+	m, err := s.merchantRepo.Upsert(ctx, name, website, logo, entityID)
 	if err != nil {
 		slog.Error("upsert merchant", "error", err, "merchant", name)
 		return nil

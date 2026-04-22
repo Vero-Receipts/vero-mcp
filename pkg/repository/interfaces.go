@@ -72,11 +72,15 @@ type MerchantAliasRepository interface {
 // logo_cdn_url when they're already populated, so repeated syncs don't
 // clobber resolved logos with fresh Plaid URLs.
 type MerchantRepository interface {
-	// Upsert resolves-or-creates a merchant by normalized canonical name.
+	// Upsert resolves-or-creates a merchant. When plaidEntityID is provided
+	// it's the authoritative identity — matches across merchant-name
+	// variations that would otherwise fork into separate rows. When absent,
+	// we fall back to matching by normalized canonical name.
+	//
 	// logoURL seeds merchants.logo_cdn_url only when no value is currently
 	// set — so a Plaid URL populates new merchants, while LogoService's later
 	// UpdateLogoURL replaces them with the self-hosted DO CDN URL.
-	Upsert(ctx context.Context, canonicalName string, websiteDomain *string, logoURL *string) (*domain.Merchant, error)
+	Upsert(ctx context.Context, canonicalName string, websiteDomain, logoURL, plaidEntityID *string) (*domain.Merchant, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*domain.Merchant, error)
 	FindByNormalizedKey(ctx context.Context, key string) (*domain.Merchant, error)
 	FindLogoJobCandidates(ctx context.Context, limit int) ([]MerchantLogoCandidate, error)
