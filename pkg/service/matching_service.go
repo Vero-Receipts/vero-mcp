@@ -192,8 +192,8 @@ func (s *MatchingService) evaluateCandidate(ctx context.Context, receipt *domain
 		receiptMerchant = *receipt.MerchantName
 	}
 	txMerchant := ""
-	if tx.MerchantName != nil {
-		txMerchant = *tx.MerchantName
+	if tx.Merchant != nil {
+		txMerchant = tx.Merchant.CanonicalName
 	}
 
 	switch {

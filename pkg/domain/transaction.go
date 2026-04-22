@@ -7,6 +7,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// Transaction is a transaction_cache row. MerchantID is the FK; Merchant is
+// populated from the JOIN on read so callers don't need a second query. None
+// of the merchant identity fields (name, logo, domain) are stored on the
+// transaction itself — they belong to the merchant record.
 type Transaction struct {
 	ID             uuid.UUID       `json:"id,omitempty"`
 	UserID         uuid.UUID       `json:"user_id,omitempty"`
@@ -16,18 +20,19 @@ type Transaction struct {
 	Date           string          `json:"date"`
 	DateTime       *time.Time      `json:"datetime,omitempty"`
 	Name           string          `json:"name"`
-	MerchantName   *string         `json:"merchant_name"`
+	MerchantID     *uuid.UUID      `json:"merchant_id,omitempty"`
+	Merchant       *Merchant       `json:"merchant,omitempty"`
 	Category       json.RawMessage `json:"category,omitempty"`
 	PFCPrimary     *string         `json:"pfc_primary,omitempty"`
 	PFCDetailed    *string         `json:"pfc_detailed,omitempty"`
 	PaymentChannel *string         `json:"payment_channel,omitempty"`
 	Pending              bool            `json:"pending"`
-	MerchantLogo         *string         `json:"merchant_logo,omitempty"`
 	SyncedAt             time.Time       `json:"synced_at,omitempty"`
 	CorrectedPFCPrimary  *string         `json:"corrected_pfc_primary,omitempty"`
 	CorrectedPFCDetailed *string         `json:"corrected_pfc_detailed,omitempty"`
 	CategoryCorrectedAt  *time.Time      `json:"category_corrected_at,omitempty"`
 }
+
 
 // TransactionWithReceipt combines a cached transaction with its matched receipt (if any).
 type TransactionWithReceipt struct {

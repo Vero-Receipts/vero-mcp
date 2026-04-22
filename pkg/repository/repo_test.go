@@ -876,9 +876,13 @@ func TestTransactionCacheRepo_UpsertBatchAndFind(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	merchantName := "Coffee Shop"
+	merchantRepo := NewMerchantRepo(db, DialectSQLite)
+	m, err := merchantRepo.Upsert(ctx, "Coffee Shop", nil, nil)
+	if err != nil {
+		t.Fatalf("upsert merchant: %v", err)
+	}
 	txns := []domain.Transaction{
-		{TransactionID: "txn_1", AccountID: "acc_1", Amount: 5.50, Date: "2025-03-15", Name: "COFFEE SHOP", MerchantName: &merchantName, Category: json.RawMessage(`["Food"]`)},
+		{TransactionID: "txn_1", AccountID: "acc_1", Amount: 5.50, Date: "2025-03-15", Name: "COFFEE SHOP", MerchantID: &m.ID, Category: json.RawMessage(`["Food"]`)},
 		{TransactionID: "txn_2", AccountID: "acc_1", Amount: 12.00, Date: "2025-03-16", Name: "GROCERY STORE", Category: json.RawMessage(`["Groceries"]`)},
 	}
 
@@ -1467,9 +1471,13 @@ func TestTransactionCacheRepo_SearchUnmatched(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	merchantName := "Starbucks"
+	mRepo := NewMerchantRepo(db, DialectSQLite)
+	sbx, err := mRepo.Upsert(ctx, "Starbucks", nil, nil)
+	if err != nil {
+		t.Fatalf("upsert merchant: %v", err)
+	}
 	txns := []domain.Transaction{
-		{TransactionID: "txn_s1", AccountID: "acc_1", Amount: 5, Date: "2025-03-15", Name: "STARBUCKS #123", MerchantName: &merchantName, Category: json.RawMessage("[]")},
+		{TransactionID: "txn_s1", AccountID: "acc_1", Amount: 5, Date: "2025-03-15", Name: "STARBUCKS #123", MerchantID: &sbx.ID, Category: json.RawMessage("[]")},
 		{TransactionID: "txn_s2", AccountID: "acc_1", Amount: 10, Date: "2025-03-15", Name: "WALMART", Category: json.RawMessage("[]")},
 	}
 	if _, err := txRepo.UpsertBatch(ctx, user.ID, txns); err != nil {

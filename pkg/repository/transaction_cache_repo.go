@@ -15,9 +15,12 @@ import (
 )
 
 // TransactionCacheRepo implements TransactionCacheRepository for both SQLite and Postgres.
+// Transactions reference merchants via merchant_id; read queries LEFT JOIN merchants
+// to populate MerchantName / MerchantLogo on the domain model, so callers that
+// need merchant display fields don't need a second query.
 type TransactionCacheRepo struct {
 	BaseRepo
-	dialect Dialect // retained for UpsertBatch prepared-statement placeholder format
+	dialect Dialect
 }
 
 func NewTransactionCacheRepo(db *sql.DB, dialect Dialect) *TransactionCacheRepo {
@@ -27,13 +30,24 @@ func NewTransactionCacheRepo(db *sql.DB, dialect Dialect) *TransactionCacheRepo 
 	}
 }
 
-// ---- column lists ----
+// ---- column selections ----
+//
+// SELECT lists. The joined "m.*" columns are appended after the transaction
+// columns so scanners can scan them with a stable positional order.
 
-var txnCols = []string{
-	"id", "user_id", "transaction_id", "account_id", "amount", "date", "datetime", "name",
-	"merchant_name", "category", "pfc_primary", "pfc_detailed", "payment_channel",
-	"pending", "merchant_logo", "synced_at",
-	"corrected_pfc_primary", "corrected_pfc_detailed", "category_corrected_at",
+var txnDBCols = []string{
+	"t.id", "t.user_id", "t.transaction_id", "t.account_id", "t.amount", "t.date", "t.datetime", "t.name",
+	"t.merchant_id", "t.category", "t.pfc_primary", "t.pfc_detailed", "t.payment_channel",
+	"t.pending", "t.synced_at",
+	"t.corrected_pfc_primary", "t.corrected_pfc_detailed", "t.category_corrected_at",
+}
+
+var merchantJoinCols = []string{
+	"m.canonical_name", "m.logo_cdn_url",
+}
+
+func txnSelectCols() []string {
+	return append(append([]string{}, txnDBCols...), merchantJoinCols...)
 }
 
 // addDays parses a YYYY-MM-DD string and returns a new YYYY-MM-DD string offset by days.
@@ -55,25 +69,23 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 	}
 	defer tx.Rollback()
 
-	// Build the upsert SQL once using raw SQL with dialect-appropriate placeholders.
 	rawSQL := `INSERT INTO transaction_cache
 		(id, user_id, transaction_id, account_id, amount, date, datetime, name,
-		 merchant_name, category, pfc_primary, pfc_detailed, payment_channel,
-		 pending, merchant_logo, synced_at)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 merchant_id, category, pfc_primary, pfc_detailed, payment_channel,
+		 pending, synced_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	 ON CONFLICT (transaction_id) DO UPDATE SET
 	   account_id      = EXCLUDED.account_id,
 	   amount          = EXCLUDED.amount,
 	   date            = EXCLUDED.date,
 	   datetime        = EXCLUDED.datetime,
 	   name            = EXCLUDED.name,
-	   merchant_name   = EXCLUDED.merchant_name,
+	   merchant_id     = COALESCE(EXCLUDED.merchant_id, transaction_cache.merchant_id),
 	   category        = EXCLUDED.category,
 	   pfc_primary     = EXCLUDED.pfc_primary,
 	   pfc_detailed    = EXCLUDED.pfc_detailed,
 	   payment_channel = EXCLUDED.payment_channel,
 	   pending         = EXCLUDED.pending,
-	   merchant_logo   = EXCLUDED.merchant_logo,
 	   synced_at       = EXCLUDED.synced_at`
 
 	if r.dialect == DialectPostgres {
@@ -102,7 +114,7 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 			dtStr = &s
 		}
 
-		var pending interface{}
+		var pending any
 		if r.dialect == DialectSQLite {
 			if t.Pending {
 				pending = 1
@@ -113,11 +125,17 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 			pending = t.Pending
 		}
 
+		var merchantIDStr *string
+		if t.MerchantID != nil {
+			s := t.MerchantID.String()
+			merchantIDStr = &s
+		}
+
 		rowID := uuid.New().String()
 		_, err := stmt.ExecContext(ctx,
 			rowID, uid, t.TransactionID, t.AccountID, t.Amount, t.Date, dtStr, t.Name,
-			t.MerchantName, category, t.PFCPrimary, t.PFCDetailed, t.PaymentChannel,
-			pending, t.MerchantLogo, now,
+			merchantIDStr, category, t.PFCPrimary, t.PFCDetailed, t.PaymentChannel,
+			pending, now,
 		)
 		if err != nil {
 			return count, err
@@ -129,10 +147,11 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 }
 
 func (r *TransactionCacheRepo) FindByUserID(ctx context.Context, userID uuid.UUID) ([]domain.Transaction, error) {
-	rows, err := r.SQ.Select(txnCols...).
-		From("transaction_cache").
-		Where(sq.Eq{"user_id": userID.String()}).
-		OrderBy("date DESC").
+	rows, err := r.SQ.Select(txnSelectCols()...).
+		From("transaction_cache t").
+		LeftJoin("merchants m ON m.id = t.merchant_id").
+		Where(sq.Eq{"t.user_id": userID.String()}).
+		OrderBy("t.date DESC").
 		QueryContext(ctx)
 	if err != nil {
 		return nil, err
@@ -143,31 +162,30 @@ func (r *TransactionCacheRepo) FindByUserID(ctx context.Context, userID uuid.UUI
 }
 
 func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, userID uuid.UUID, filter domain.TransactionFilter) ([]domain.TransactionWithReceipt, error) {
-	txnColsPrefixed := prefixCols("t.", txnCols)
 	receiptJoinCols := []string{
 		"r.id", "r.image_url", "r.thumbnail_url", "r.merchant_name",
 		"r.total", "r.subtotal", "r.tax", "r.tip",
 		"r.payment_method", "r.last_four_digits", "r.date", "r.line_items",
 		"rm.match_method", "rm.confidence_score",
 	}
-	cols := append(txnColsPrefixed, receiptJoinCols...)
+	cols := append(txnSelectCols(), receiptJoinCols...)
 
 	qb := r.SQ.Select(cols...).
 		From("transaction_cache t").
+		LeftJoin("merchants m ON m.id = t.merchant_id").
 		LeftJoin("receipt_matches rm ON rm.transaction_id = t.transaction_id").
 		LeftJoin("receipts r ON r.id = rm.receipt_id").
 		Where(sq.Eq{"t.user_id": userID.String()})
 
-	qb = applyTransactionFiltersSQ(qb, filter, "t.")
+	qb = applyTransactionFiltersSQ(qb, filter)
 
-	// Handle matched filter
 	if strings.EqualFold(filter.Matched, "true") || strings.EqualFold(filter.Matched, "matched") {
 		qb = qb.Where("rm.id IS NOT NULL")
 	} else if strings.EqualFold(filter.Matched, "false") || strings.EqualFold(filter.Matched, "unmatched") {
 		qb = qb.Where("rm.id IS NULL")
 	}
 
-	qb = qb.OrderBy(transactionOrderBySQ(filter, "t."))
+	qb = qb.OrderBy(transactionOrderBySQ(filter))
 
 	rows, err := qb.QueryContext(ctx)
 	if err != nil {
@@ -180,6 +198,8 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 	for rows.Next() {
 		var twr domain.TransactionWithReceipt
 		var idStr, userIDStr string
+		var merchantIDStr sql.NullString
+		var mCanonical, mLogo sql.NullString
 		var dt, syncedAt, correctedAt ScannableTime
 		var categoryStr string
 		var pendingVal ScannableBool
@@ -198,8 +218,9 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 		err := rows.Scan(
 			&idStr, &userIDStr, &twr.TransactionID, &twr.AccountID,
 			&twr.Amount, &twr.Date, &dt, &twr.Name,
-			&twr.MerchantName, &categoryStr, &twr.PFCPrimary, &twr.PFCDetailed, &twr.PaymentChannel,
-			&pendingVal, &twr.MerchantLogo, &syncedAt, &twr.CorrectedPFCPrimary, &twr.CorrectedPFCDetailed, &correctedAt,
+			&merchantIDStr, &categoryStr, &twr.PFCPrimary, &twr.PFCDetailed, &twr.PaymentChannel,
+			&pendingVal, &syncedAt, &twr.CorrectedPFCPrimary, &twr.CorrectedPFCDetailed, &correctedAt,
+			&mCanonical, &mLogo,
 			&rID, &rImageURL, &rThumbnailURL, &rMerchantName, &rTotal, &rSubtotal, &rTax, &rTip,
 			&rPaymentMethod, &rLastFour, &rDate, &rLineItems,
 			&rmMethod, &rmConfidence,
@@ -210,6 +231,14 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 
 		twr.ID = ScanUUID(idStr)
 		twr.UserID = ScanUUID(userIDStr)
+		if merchantIDStr.Valid {
+			mid := ScanUUID(merchantIDStr.String)
+			twr.MerchantID = &mid
+			twr.Merchant = &domain.Merchant{ID: mid, CanonicalName: mCanonical.String}
+			if mLogo.Valid {
+				twr.Merchant.LogoCDNURL = &mLogo.String
+			}
+		}
 		twr.Pending = pendingVal.Val
 		twr.Category = json.RawMessage(categoryStr)
 		twr.DateTime = dt.Val
@@ -218,7 +247,6 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 		}
 		twr.CategoryCorrectedAt = correctedAt.Val
 
-		// Deduplicate by transaction_id
 		if seen[twr.TransactionID] {
 			continue
 		}
@@ -270,15 +298,16 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 }
 
 func (r *TransactionCacheRepo) FindUnmatchedCandidates(ctx context.Context, userID uuid.UUID, amount float64, dateStr string) ([]domain.Transaction, error) {
-	rows, err := r.SQ.Select(txnCols...).
-		From("transaction_cache").
-		Where(sq.Eq{"user_id": userID.String()}).
-		Where(sq.GtOrEq{"amount": amount * 0.9}).
-		Where(sq.LtOrEq{"amount": amount * 1.1}).
-		Where(sq.GtOrEq{"date": addDays(dateStr, -5)}).
-		Where(sq.LtOrEq{"date": addDays(dateStr, 5)}).
-		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = transaction_cache.transaction_id)").
-		OrderBy("date DESC").
+	rows, err := r.SQ.Select(txnSelectCols()...).
+		From("transaction_cache t").
+		LeftJoin("merchants m ON m.id = t.merchant_id").
+		Where(sq.Eq{"t.user_id": userID.String()}).
+		Where(sq.GtOrEq{"t.amount": amount * 0.9}).
+		Where(sq.LtOrEq{"t.amount": amount * 1.1}).
+		Where(sq.GtOrEq{"t.date": addDays(dateStr, -5)}).
+		Where(sq.LtOrEq{"t.date": addDays(dateStr, 5)}).
+		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = t.transaction_id)").
+		OrderBy("t.date DESC").
 		QueryContext(ctx)
 	if err != nil {
 		return nil, err
@@ -289,11 +318,12 @@ func (r *TransactionCacheRepo) FindUnmatchedCandidates(ctx context.Context, user
 }
 
 func (r *TransactionCacheRepo) FindAllUnmatched(ctx context.Context, userID uuid.UUID) ([]domain.Transaction, error) {
-	rows, err := r.SQ.Select(txnCols...).
-		From("transaction_cache").
-		Where(sq.Eq{"user_id": userID.String()}).
-		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = transaction_cache.transaction_id)").
-		OrderBy("date DESC").
+	rows, err := r.SQ.Select(txnSelectCols()...).
+		From("transaction_cache t").
+		LeftJoin("merchants m ON m.id = t.merchant_id").
+		Where(sq.Eq{"t.user_id": userID.String()}).
+		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = t.transaction_id)").
+		OrderBy("t.date DESC").
 		QueryContext(ctx)
 	if err != nil {
 		return nil, err
@@ -304,13 +334,14 @@ func (r *TransactionCacheRepo) FindAllUnmatched(ctx context.Context, userID uuid
 }
 
 func (r *TransactionCacheRepo) FindUnmatchedByDateRange(ctx context.Context, userID uuid.UUID, dateStr string) ([]domain.Transaction, error) {
-	rows, err := r.SQ.Select(txnCols...).
-		From("transaction_cache").
-		Where(sq.Eq{"user_id": userID.String()}).
-		Where(sq.GtOrEq{"date": addDays(dateStr, -3)}).
-		Where(sq.LtOrEq{"date": addDays(dateStr, 3)}).
-		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = transaction_cache.transaction_id)").
-		OrderBy("date DESC").
+	rows, err := r.SQ.Select(txnSelectCols()...).
+		From("transaction_cache t").
+		LeftJoin("merchants m ON m.id = t.merchant_id").
+		Where(sq.Eq{"t.user_id": userID.String()}).
+		Where(sq.GtOrEq{"t.date": addDays(dateStr, -3)}).
+		Where(sq.LtOrEq{"t.date": addDays(dateStr, 3)}).
+		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = t.transaction_id)").
+		OrderBy("t.date DESC").
 		QueryContext(ctx)
 	if err != nil {
 		return nil, err
@@ -326,15 +357,16 @@ func (r *TransactionCacheRepo) FindUnmatchedTight(ctx context.Context, userID uu
 		tolerance = 0.15
 	}
 
-	rows, err := r.SQ.Select(txnCols...).
-		From("transaction_cache").
-		Where(sq.Eq{"user_id": userID.String()}).
-		Where(sq.GtOrEq{"amount": amount * (1 - tolerance)}).
-		Where(sq.LtOrEq{"amount": amount * (1 + tolerance)}).
-		Where(sq.GtOrEq{"date": addDays(dateStr, -2)}).
-		Where(sq.LtOrEq{"date": addDays(dateStr, 2)}).
-		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = transaction_cache.transaction_id)").
-		OrderBy("date DESC").
+	rows, err := r.SQ.Select(txnSelectCols()...).
+		From("transaction_cache t").
+		LeftJoin("merchants m ON m.id = t.merchant_id").
+		Where(sq.Eq{"t.user_id": userID.String()}).
+		Where(sq.GtOrEq{"t.amount": amount * (1 - tolerance)}).
+		Where(sq.LtOrEq{"t.amount": amount * (1 + tolerance)}).
+		Where(sq.GtOrEq{"t.date": addDays(dateStr, -2)}).
+		Where(sq.LtOrEq{"t.date": addDays(dateStr, 2)}).
+		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = t.transaction_id)").
+		OrderBy("t.date DESC").
 		QueryContext(ctx)
 	if err != nil {
 		return nil, err
@@ -358,15 +390,16 @@ func (r *TransactionCacheRepo) RemoveBatch(ctx context.Context, transactionIDs [
 func (r *TransactionCacheRepo) SearchUnmatched(ctx context.Context, userID uuid.UUID, search string) ([]domain.Transaction, error) {
 	like := "%" + search + "%"
 
-	rows, err := r.SQ.Select(txnCols...).
-		From("transaction_cache").
-		Where(sq.Eq{"user_id": userID.String()}).
+	rows, err := r.SQ.Select(txnSelectCols()...).
+		From("transaction_cache t").
+		LeftJoin("merchants m ON m.id = t.merchant_id").
+		Where(sq.Eq{"t.user_id": userID.String()}).
 		Where(sq.Or{
-			sq.Expr("LOWER(name) LIKE LOWER(?)", like),
-			sq.Expr("LOWER(merchant_name) LIKE LOWER(?)", like),
+			sq.Expr("LOWER(t.name) LIKE LOWER(?)", like),
+			sq.Expr("LOWER(m.canonical_name) LIKE LOWER(?)", like),
 		}).
-		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = transaction_cache.transaction_id)").
-		OrderBy("date DESC").
+		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = t.transaction_id)").
+		OrderBy("t.date DESC").
 		QueryContext(ctx)
 	if err != nil {
 		return nil, err
@@ -377,9 +410,10 @@ func (r *TransactionCacheRepo) SearchUnmatched(ctx context.Context, userID uuid.
 }
 
 func (r *TransactionCacheRepo) FindByTransactionID(ctx context.Context, transactionID string) (*domain.Transaction, error) {
-	row := r.SQ.Select(txnCols...).
-		From("transaction_cache").
-		Where(sq.Eq{"transaction_id": transactionID}).
+	row := r.SQ.Select(txnSelectCols()...).
+		From("transaction_cache t").
+		LeftJoin("merchants m ON m.id = t.merchant_id").
+		Where(sq.Eq{"t.transaction_id": transactionID}).
 		QueryRowContext(ctx)
 
 	t, err := r.scanTransaction(row)
@@ -417,6 +451,8 @@ func (r *TransactionCacheRepo) UpdateCorrectedCategory(ctx context.Context, tran
 func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, error) {
 	var t domain.Transaction
 	var idStr, userIDStr string
+	var merchantIDStr sql.NullString
+	var mCanonical, mLogo sql.NullString
 	var dt, syncedAt, correctedAt ScannableTime
 	var categoryStr string
 	var pendingVal ScannableBool
@@ -424,8 +460,9 @@ func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, 
 	err := s.Scan(
 		&idStr, &userIDStr, &t.TransactionID, &t.AccountID,
 		&t.Amount, &t.Date, &dt, &t.Name,
-		&t.MerchantName, &categoryStr, &t.PFCPrimary, &t.PFCDetailed, &t.PaymentChannel,
-		&pendingVal, &t.MerchantLogo, &syncedAt, &t.CorrectedPFCPrimary, &t.CorrectedPFCDetailed, &correctedAt,
+		&merchantIDStr, &categoryStr, &t.PFCPrimary, &t.PFCDetailed, &t.PaymentChannel,
+		&pendingVal, &syncedAt, &t.CorrectedPFCPrimary, &t.CorrectedPFCDetailed, &correctedAt,
+		&mCanonical, &mLogo,
 	)
 	if err != nil {
 		return nil, err
@@ -433,6 +470,14 @@ func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, 
 
 	t.ID = ScanUUID(idStr)
 	t.UserID = ScanUUID(userIDStr)
+	if merchantIDStr.Valid {
+		mid := ScanUUID(merchantIDStr.String)
+		t.MerchantID = &mid
+		t.Merchant = &domain.Merchant{ID: mid, CanonicalName: mCanonical.String}
+		if mLogo.Valid {
+			t.Merchant.LogoCDNURL = &mLogo.String
+		}
+	}
 	t.Pending = pendingVal.Val
 	t.Category = json.RawMessage(categoryStr)
 	t.DateTime = dt.Val
@@ -457,55 +502,57 @@ func (r *TransactionCacheRepo) scanTransactions(rows *sql.Rows) ([]domain.Transa
 }
 
 // --- filter / order helpers (squirrel) ---
+//
+// All filters reference the aliased tables: t. for transactions, m. for merchants.
 
-func applyTransactionFiltersSQ(qb sq.SelectBuilder, f domain.TransactionFilter, prefix string) sq.SelectBuilder {
+func applyTransactionFiltersSQ(qb sq.SelectBuilder, f domain.TransactionFilter) sq.SelectBuilder {
 	if f.Search != "" {
 		like := "%" + f.Search + "%"
 		qb = qb.Where(sq.Or{
-			sq.Expr("LOWER("+prefix+"name) LIKE LOWER(?)", like),
-			sq.Expr("LOWER("+prefix+"merchant_name) LIKE LOWER(?)", like),
+			sq.Expr("LOWER(t.name) LIKE LOWER(?)", like),
+			sq.Expr("LOWER(m.canonical_name) LIKE LOWER(?)", like),
 		})
 	}
 	if f.DateFrom != "" {
-		qb = qb.Where(sq.GtOrEq{prefix + "date": f.DateFrom})
+		qb = qb.Where(sq.GtOrEq{"t.date": f.DateFrom})
 	}
 	if f.DateTo != "" {
-		qb = qb.Where(sq.LtOrEq{prefix + "date": f.DateTo})
+		qb = qb.Where(sq.LtOrEq{"t.date": f.DateTo})
 	}
 	if f.AmountMin != nil {
-		qb = qb.Where(sq.GtOrEq{prefix + "amount": *f.AmountMin})
+		qb = qb.Where(sq.GtOrEq{"t.amount": *f.AmountMin})
 	}
 	if f.AmountMax != nil {
-		qb = qb.Where(sq.LtOrEq{prefix + "amount": *f.AmountMax})
+		qb = qb.Where(sq.LtOrEq{"t.amount": *f.AmountMax})
 	}
 	if f.Category != "" {
-		qb = qb.Where(sq.Expr("LOWER("+prefix+"category) LIKE LOWER(?)", "%" + f.Category + "%"))
+		qb = qb.Where(sq.Expr("LOWER(t.category) LIKE LOWER(?)", "%"+f.Category+"%"))
 	}
 	if f.PFCPrimary != "" {
-		qb = qb.Where(sq.Eq{prefix + "pfc_primary": f.PFCPrimary})
+		qb = qb.Where(sq.Eq{"t.pfc_primary": f.PFCPrimary})
 	}
 	if f.PFCDetailed != "" {
-		qb = qb.Where(sq.Eq{prefix + "pfc_detailed": f.PFCDetailed})
+		qb = qb.Where(sq.Eq{"t.pfc_detailed": f.PFCDetailed})
 	}
 	if strings.EqualFold(f.Pending, "true") {
-		qb = qb.Where(sq.Eq{prefix + "pending": true})
+		qb = qb.Where(sq.Eq{"t.pending": true})
 	} else if strings.EqualFold(f.Pending, "false") {
-		qb = qb.Where(sq.Eq{prefix + "pending": false})
+		qb = qb.Where(sq.Eq{"t.pending": false})
 	}
 	return qb
 }
 
-func transactionOrderBySQ(f domain.TransactionFilter, prefix string) string {
-	col := prefix + "date"
+func transactionOrderBySQ(f domain.TransactionFilter) string {
+	col := "t.date"
 	dir := "DESC"
 
 	switch strings.ToLower(f.SortBy) {
 	case "amount":
-		col = prefix + "amount"
+		col = "t.amount"
 	case "name":
-		col = prefix + "name"
+		col = "t.name"
 	case "merchant", "merchant_name":
-		col = prefix + "merchant_name"
+		col = "m.canonical_name"
 	}
 
 	if strings.EqualFold(f.SortOrder, "asc") {

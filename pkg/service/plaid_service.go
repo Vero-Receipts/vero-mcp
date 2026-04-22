@@ -21,6 +21,7 @@ type PlaidService struct {
 	itemRepo      repository.PlaidItemRepository
 	userRepo      repository.UserRepository
 	txCacheRepo   repository.TransactionCacheRepository
+	merchantRepo  repository.MerchantRepository
 	receiptSvc    *ReceiptService
 	encryptionKey string // optional; empty = no encryption (plain text tokens)
 	redirectURI   string
@@ -31,6 +32,7 @@ func NewPlaidService(
 	itemRepo repository.PlaidItemRepository,
 	userRepo repository.UserRepository,
 	txCacheRepo repository.TransactionCacheRepository,
+	merchantRepo repository.MerchantRepository,
 	receiptSvc *ReceiptService,
 ) *PlaidService {
 	plaidEnv := plaid.Sandbox
@@ -48,10 +50,37 @@ func NewPlaidService(
 		itemRepo:      itemRepo,
 		userRepo:      userRepo,
 		txCacheRepo:   txCacheRepo,
+		merchantRepo:  merchantRepo,
 		receiptSvc:    receiptSvc,
 		encryptionKey: encryptionKey,
 		redirectURI:   redirectURI,
 	}
+}
+
+// resolveMerchantID upserts a merchant and returns its ID. Returns nil when
+// the merchant name is empty — the transaction will land with merchant_id NULL.
+func (s *PlaidService) resolveMerchantID(ctx context.Context, tx plaid.Transaction) *uuid.UUID {
+	name := tx.GetMerchantName()
+	if name == "" {
+		return nil
+	}
+
+	var website *string
+	if w, ok := tx.GetWebsiteOk(); ok && w != nil && *w != "" {
+		website = w
+	}
+
+	var logo *string
+	if l := tx.GetLogoUrl(); l != "" {
+		logo = &l
+	}
+
+	m, err := s.merchantRepo.Upsert(ctx, name, website, logo)
+	if err != nil {
+		slog.Error("upsert merchant", "error", err, "merchant", name)
+		return nil
+	}
+	return &m.ID
 }
 
 func (s *PlaidService) CreateLinkToken(ctx context.Context, userID uuid.UUID) (interface{}, error) {
@@ -365,6 +394,7 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 				if logo := tx.GetLogoUrl(); logo != "" {
 					merchantLogo = &logo
 				}
+				merchantID := s.resolveMerchantID(ctx, tx)
 				categoryJSON, _ := json.Marshal(tx.GetCategory())
 
 				// Debug: log every field relevant to display so discrepancies between
@@ -382,6 +412,7 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 					"pending", tx.GetPending(),
 					"payment_channel", tx.GetPaymentChannel(),
 					"logo_url", tx.GetLogoUrl(),
+					"website", tx.GetWebsite(),
 				)
 
 				// Extract datetime from Plaid response
@@ -476,13 +507,12 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 					Date:           tx.GetDate(),
 					DateTime:       datetime,
 					Name:           tx.GetName(),
-					MerchantName:   merchantName,
+					MerchantID:     merchantID,
 					Category:       categoryJSON,
 					PFCPrimary:     pfcPrimary,
 					PFCDetailed:    pfcDetailed,
 					PaymentChannel: paymentChannel,
 					Pending:        tx.GetPending(),
-					MerchantLogo:   merchantLogo,
 				})
 			}
 
@@ -635,6 +665,12 @@ func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, f
 		var cats []string
 		_ = json.Unmarshal(row.Category, &cats)
 
+		var mName, mLogo *string
+		if row.Merchant != nil {
+			n := row.Merchant.CanonicalName
+			mName = &n
+			mLogo = row.Merchant.LogoCDNURL
+		}
 		resp := domain.TransactionResponse{
 			ID:                   row.TransactionID,
 			AccountID:            row.AccountID,
@@ -642,13 +678,13 @@ func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, f
 			Date:                 row.Date,
 			DateTime:             row.DateTime,
 			Name:                 row.Name,
-			MerchantName:         row.MerchantName,
+			MerchantName:         mName,
 			Category:             cats,
 			PFCPrimary:           row.PFCPrimary,
 			PFCDetailed:          row.PFCDetailed,
 			PaymentChannel:       row.PaymentChannel,
 			Pending:              row.Pending,
-			MerchantLogo:         row.MerchantLogo,
+			MerchantLogo:         mLogo,
 			CorrectedPFCPrimary:  row.CorrectedPFCPrimary,
 			CorrectedPFCDetailed: row.CorrectedPFCDetailed,
 			Receipt:              row.Receipt,
@@ -709,6 +745,7 @@ func (s *PlaidService) ForceSyncForWebhook(ctx context.Context, itemID string) (
 			if logo := tx.GetLogoUrl(); logo != "" {
 				merchantLogo = &logo
 			}
+			merchantID := s.resolveMerchantID(ctx, tx)
 			categoryJSON, _ := json.Marshal(tx.GetCategory())
 
 			// Extract datetime from Plaid response
@@ -779,13 +816,12 @@ func (s *PlaidService) ForceSyncForWebhook(ctx context.Context, itemID string) (
 				Date:           tx.GetDate(),
 				DateTime:       datetime,
 				Name:           tx.GetName(),
-				MerchantName:   merchantName,
+				MerchantID:     merchantID,
 				Category:       categoryJSON,
 				PFCPrimary:     pfcPrimary,
 				PFCDetailed:    pfcDetailed,
 				PaymentChannel: paymentChannel,
 				Pending:        tx.GetPending(),
-				MerchantLogo:   merchantLogo,
 			})
 		}
 
