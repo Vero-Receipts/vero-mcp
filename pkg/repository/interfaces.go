@@ -67,6 +67,22 @@ type MerchantAliasRepository interface {
 	Create(ctx context.Context, alias *domain.MerchantAlias) error
 }
 
+// MerchantRepository manages the canonical merchants table.
+// Upsert is the primary write path — it preserves existing domain and
+// logo_cdn_url when they're already populated, so repeated syncs don't
+// clobber resolved logos with fresh Plaid URLs.
+type MerchantRepository interface {
+	// Upsert resolves-or-creates a merchant. When plaidEntityID is provided
+	// it's the authoritative identity — matches across merchant-name
+	// variations that would otherwise fork into separate rows. When absent,
+	// we fall back to matching by normalized canonical name.
+	Upsert(ctx context.Context, canonicalName string, websiteDomain, logoURL, plaidEntityID *string) (*domain.Merchant, error)
+	FindByID(ctx context.Context, id uuid.UUID) (*domain.Merchant, error)
+	FindByNormalizedKey(ctx context.Context, key string) (*domain.Merchant, error)
+	UpdateLogoURL(ctx context.Context, merchantID uuid.UUID, cdnURL string) error
+	UpdateDomain(ctx context.Context, merchantID uuid.UUID, domain string) error
+}
+
 type MatchAuditRepository interface {
 	Create(ctx context.Context, entry *domain.MatchAuditEntry) error
 }

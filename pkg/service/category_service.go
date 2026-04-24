@@ -51,8 +51,8 @@ func (s *CategoryService) CorrectCategoryAfterMatch(ctx context.Context, receipt
 	merchantCanonical := ""
 	if receipt.MerchantName != nil {
 		merchantCanonical = NormalizeMerchant(*receipt.MerchantName)
-	} else if tx.MerchantName != nil {
-		merchantCanonical = NormalizeMerchant(*tx.MerchantName)
+	} else if tx.Merchant != nil {
+		merchantCanonical = NormalizeMerchant(tx.Merchant.CanonicalName)
 	}
 	if merchantCanonical == "" {
 		merchantCanonical = NormalizeMerchant(tx.Name)

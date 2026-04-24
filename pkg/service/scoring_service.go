@@ -75,8 +75,8 @@ func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Re
 
 		// --- Merchant Score (deterministic) ---
 		txMerchant := ""
-		if tx.MerchantName != nil {
-			txMerchant = *tx.MerchantName
+		if tx.Merchant != nil {
+			txMerchant = tx.Merchant.CanonicalName
 		}
 		cs.MerchantScore, cs.MerchantMethod = s.scoreMerchant(ctx, receiptMerchant, txMerchant, tx.Name)
 
