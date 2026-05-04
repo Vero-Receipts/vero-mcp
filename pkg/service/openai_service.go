@@ -219,7 +219,6 @@ func BuildImageReceiptRequest(imageBytes []byte, mimeType string) ([]byte, error
 				"schema": schema,
 			},
 		},
-		"temperature": 0.1,
 	}
 
 	return json.Marshal(reqBody)
@@ -465,7 +464,6 @@ Instructions:
 				"schema": receiptJSONSchema(),
 			},
 		},
-		"temperature": 0.1,
 	}
 
 	return json.Marshal(reqBody)
@@ -548,8 +546,7 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 				"schema": schema,
 			},
 		},
-		"temperature": 0.0,
-		"max_tokens":  256,
+		"max_tokens": 256,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -655,8 +652,7 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 				"schema": schema,
 			},
 		},
-		"temperature": 0.0,
-		"max_tokens":  256,
+		"max_tokens": 256,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
