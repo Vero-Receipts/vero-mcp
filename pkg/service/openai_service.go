@@ -21,7 +21,7 @@ import (
 
 const openAIURL = "https://api.openai.com/v1/chat/completions"
 
-// OpenAIService uses GPT-4o Vision to parse receipt images into structured data.
+// OpenAIService uses GTP-5-Nano Vision to parse receipt images into structured data.
 type OpenAIService struct {
 	apiKey     string
 	httpClient *http.Client
@@ -90,7 +90,7 @@ func (s *OpenAIService) doRequest(ctx context.Context, bodyBytes []byte) ([]byte
 	return respBytes, nil
 }
 
-// openAIReceiptData is the structured schema returned by GPT-4o.
+// openAIReceiptData is the structured schema returned by GTP-5-Nano.
 type openAIReceiptData struct {
 	MerchantName    string           `json:"merchantName"`
 	MerchantAddress string           `json:"merchantAddress"`
@@ -130,7 +130,7 @@ func mimeTypeFromPath(filePath string) string {
 	return "image/jpeg"
 }
 
-// ParseImage sends the receipt image to GPT-4o Vision and returns a structured OCRResult.
+// ParseImage sends the receipt image to GTP-5-Nano Vision and returns a structured OCRResult.
 func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain.OCRResult {
 	if s.apiKey == "" {
 		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
@@ -148,17 +148,104 @@ func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain
 	return s.ParseImageData(ctx, imageBytes, mimeType)
 }
 
-// ParseImageData sends the receipt image bytes to GPT-4o Vision and returns a structured OCRResult.
+// ParseImageData sends the receipt image bytes to GTP-5-Nano Vision and returns a structured OCRResult.
 func (s *OpenAIService) ParseImageData(ctx context.Context, imageBytes []byte, mimeType string) *domain.OCRResult {
 	if s.apiKey == "" {
 		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
 		return &domain.OCRResult{Error: "OpenAI API key not configured"}
 	}
 
+	bodyBytes, err := BuildImageReceiptRequest(imageBytes, mimeType)
+	if err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
+	}
+
+	respBytes, err := s.doRequest(ctx, bodyBytes)
+	if err != nil {
+		return &domain.OCRResult{Error: err.Error()}
+	}
+
+	result := ParseReceiptCompletion(respBytes)
+	if result.Error == "" {
+		slog.Info("[OpenAI] successfully parsed receipt",
+			"merchant", result.MerchantName,
+			"total", derefFloat(result.Total),
+			"items", len(result.LineItems),
+		)
+	}
+	return result
+}
+
+// derefFloat is a small helper for log lines.
+func derefFloat(v *float64) float64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+// BuildImageReceiptRequest constructs the chat-completions request body for
+// vision-based receipt parsing. Exported so callers (e.g. the OpenAI Batch API
+// path) can produce identical request payloads without sending them inline.
+func BuildImageReceiptRequest(imageBytes []byte, mimeType string) ([]byte, error) {
 	base64Image := base64.StdEncoding.EncodeToString(imageBytes)
 
-	// JSON schema for structured output — mirrors the JS receiptSchema exactly.
-	schema := map[string]interface{}{
+	schema := receiptJSONSchema()
+
+	reqBody := map[string]interface{}{
+		"model": "gpt-5-nano",
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type": "text",
+						"text": imageReceiptPrompt(),
+					},
+					{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:%s;base64,%s", mimeType, base64Image),
+						},
+					},
+				},
+			},
+		},
+		"response_format": map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name":   "receipt_extraction",
+				"strict": true,
+				"schema": schema,
+			},
+		},
+		"temperature": 0.1,
+	}
+
+	return json.Marshal(reqBody)
+}
+
+// imageReceiptPrompt returns the prompt used for vision-based receipt parsing.
+func imageReceiptPrompt() string {
+	return `Analyze this receipt image and extract all information in a structured format.
+
+Instructions:
+- Extract merchant name, address, date, and time
+- List all purchased items with their quantities and prices
+- Include subtotal, tax, tip (if any), and total
+- Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If the merchant address is in Mexico and the symbol is $, use MXN. If ambiguous, default to USD.
+- Identify payment method and last 4 digits of card if visible
+- If any field is not visible or unclear, use reasonable defaults (empty string for text, 0 for numbers)
+- IMPORTANT: For the transaction date, carefully distinguish the DATE from the TIME. They are separate fields. The date is the calendar day (month/day/year) and the time is the clock reading (hours:minutes). Do NOT mix digits from the time into the date.
+- The date on the receipt may appear in various formats (e.g. "MARCH 1, 2026", "03/01/26", "2026-03-01"). Parse it carefully and output in YYYY-MM-DD format.
+- If the year is ambiguous or appears to be in the past (e.g. 2023 for a recent receipt), double-check the receipt for other year clues (e.g. return policy dates, copyright notices). When in doubt and the current year is 2026, prefer the current year.
+- For times, use HH:MM format (24-hour)
+- All monetary amounts should be numbers (not strings)`
+}
+
+// receiptJSONSchema returns the JSON schema used for structured receipt output.
+func receiptJSONSchema() map[string]interface{} {
+	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
 			"merchantName":    map[string]string{"type": "string", "description": "Name of the merchant or store"},
@@ -194,61 +281,13 @@ func (s *OpenAIService) ParseImageData(ctx context.Context, imageBytes []byte, m
 		},
 		"additionalProperties": false,
 	}
+}
 
-	reqBody := map[string]interface{}{
-		"model": "gpt-4o",
-		"messages": []map[string]interface{}{
-			{
-				"role": "user",
-				"content": []map[string]interface{}{
-					{
-						"type": "text",
-						"text": `Analyze this receipt image and extract all information in a structured format.
-
-Instructions:
-- Extract merchant name, address, date, and time
-- List all purchased items with their quantities and prices
-- Include subtotal, tax, tip (if any), and total
-- Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If the merchant address is in Mexico and the symbol is $, use MXN. If ambiguous, default to USD.
-- Identify payment method and last 4 digits of card if visible
-- If any field is not visible or unclear, use reasonable defaults (empty string for text, 0 for numbers)
-- IMPORTANT: For the transaction date, carefully distinguish the DATE from the TIME. They are separate fields. The date is the calendar day (month/day/year) and the time is the clock reading (hours:minutes). Do NOT mix digits from the time into the date.
-- The date on the receipt may appear in various formats (e.g. "MARCH 1, 2026", "03/01/26", "2026-03-01"). Parse it carefully and output in YYYY-MM-DD format.
-- If the year is ambiguous or appears to be in the past (e.g. 2023 for a recent receipt), double-check the receipt for other year clues (e.g. return policy dates, copyright notices). When in doubt and the current year is 2026, prefer the current year.
-- For times, use HH:MM format (24-hour)
-- All monetary amounts should be numbers (not strings)`,
-					},
-					{
-						"type": "image_url",
-						"image_url": map[string]string{
-							"url": fmt.Sprintf("data:%s;base64,%s", mimeType, base64Image),
-						},
-					},
-				},
-			},
-		},
-		"response_format": map[string]interface{}{
-			"type": "json_schema",
-			"json_schema": map[string]interface{}{
-				"name":   "receipt_extraction",
-				"strict": true,
-				"schema": schema,
-			},
-		},
-		"temperature": 0.1,
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
-	}
-
-	respBytes, err := s.doRequest(ctx, bodyBytes)
-	if err != nil {
-		return &domain.OCRResult{Error: err.Error()}
-	}
-
-	// Unwrap the chat completion envelope.
+// ParseReceiptCompletion decodes a chat-completions response body produced by
+// the receipt-extraction prompt (image or text) into a domain.OCRResult.
+// Exported so the OpenAI Batch API path can ingest results using the same
+// parsing logic as the inline path.
+func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 	var completion struct {
 		Choices []struct {
 			Message struct {
@@ -269,19 +308,11 @@ Instructions:
 		return &domain.OCRResult{Error: "no choices in OpenAI response"}
 	}
 
-	// Parse the structured JSON content.
 	var data openAIReceiptData
 	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &data); err != nil {
 		return &domain.OCRResult{Error: fmt.Sprintf("decode receipt data: %v", err)}
 	}
 
-	slog.Info("[OpenAI] successfully parsed receipt",
-		"merchant", data.MerchantName,
-		"total", data.Total,
-		"items", len(data.LineItems),
-	)
-
-	// Map to domain.LineItem slice.
 	lineItems := make([]domain.LineItem, 0, len(data.LineItems))
 	for _, item := range data.LineItems {
 		unitPrice := item.UnitPrice
@@ -296,7 +327,6 @@ Instructions:
 		})
 	}
 
-	// Build a human-readable raw text summary for backward compat / fallback matching.
 	cur := data.Currency
 	if cur == "" {
 		cur = "USD"
@@ -337,7 +367,7 @@ Instructions:
 }
 
 // ParseTextAsReceipt sends text (e.g. extracted from an email body or PDF)
-// to GPT-4o for structured receipt extraction. This is the same underlying
+// to GTP-5-Nano for structured receipt extraction. This is the same underlying
 // call that host applications use for email-body receipt parsing.
 // The method is exported so that wrapper applications can call it directly.
 func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contextLabel string, receivedAt *time.Time) *domain.OCRResult {
@@ -347,55 +377,47 @@ func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contex
 
 	slog.Info("[OpenAI] parsing text for receipt data", "context", contextLabel)
 
-	// Truncate very long bodies to avoid excessive token usage.
+	if len(bodyText) > 8000 && strings.Count(bodyText[:8000], "{") > 20 && strings.Count(bodyText[:8000], "}") > 20 {
+		slog.Warn("[OpenAI] text appears to still contain CSS, truncating", "context", contextLabel)
+	}
+
+	bodyBytes, err := BuildTextReceiptRequest(bodyText, contextLabel, receivedAt)
+	if err != nil {
+		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
+	}
+
+	respBytes, err := s.doRequest(ctx, bodyBytes)
+	if err != nil {
+		return &domain.OCRResult{Error: err.Error()}
+	}
+
+	result := ParseReceiptCompletion(respBytes)
+	if result.Error == "" {
+		slog.Info("[OpenAI] successfully parsed text receipt",
+			"merchant", result.MerchantName,
+			"total", derefFloat(result.Total),
+			"items", len(result.LineItems),
+		)
+	}
+	return result
+}
+
+// BuildTextReceiptRequest constructs the chat-completions request body for
+// text-based receipt parsing (e.g. email body, extracted PDF text). Exported so
+// callers (e.g. the OpenAI Batch API path) can produce identical request
+// payloads without sending them inline.
+//
+// Applies the same body-length guards as ParseTextAsReceipt: 8000-char hard cap
+// plus an aggressive 4000-char truncation if the text still contains CSS-like
+// `{`/`}` clusters (a sign that HTML stripping missed style blocks).
+func BuildTextReceiptRequest(bodyText, contextLabel string, receivedAt *time.Time) ([]byte, error) {
 	if len(bodyText) > 8000 {
 		bodyText = bodyText[:8000]
 	}
-
-	// If the body still contains CSS-like patterns after HTML stripping,
-	// it's likely that style blocks were not fully removed. Truncate aggressively.
 	if strings.Count(bodyText, "{") > 20 && strings.Count(bodyText, "}") > 20 {
-		slog.Warn("[OpenAI] text appears to still contain CSS, truncating", "context", contextLabel)
 		if len(bodyText) > 4000 {
 			bodyText = bodyText[:4000]
 		}
-	}
-
-	schema := map[string]interface{}{
-		"type": "object",
-		"properties": map[string]interface{}{
-			"merchantName":    map[string]string{"type": "string", "description": "Name of the merchant or store"},
-			"merchantAddress": map[string]string{"type": "string", "description": "Full address of the merchant"},
-			"transactionDate": map[string]string{"type": "string", "description": "Date of transaction in YYYY-MM-DD format"},
-			"transactionTime": map[string]string{"type": "string", "description": "Time of transaction in HH:MM format"},
-			"subtotal":        map[string]string{"type": "number", "description": "Subtotal amount before tax and tip"},
-			"tax":             map[string]string{"type": "number", "description": "Tax amount"},
-			"tip":             map[string]string{"type": "number", "description": "Tip amount if present, otherwise 0"},
-			"total":           map[string]string{"type": "number", "description": "Total amount paid"},
-			"currency":        map[string]string{"type": "string", "description": "ISO 4217 currency code (e.g. USD, EUR, MXN, GBP, JPY). Determine from currency symbols or text."},
-			"paymentMethod":   map[string]string{"type": "string", "description": "Payment method used (e.g., Credit Card, Cash, Debit)"},
-			"lastFourDigits":  map[string]string{"type": "string", "description": "Last 4 digits of card if visible, otherwise empty string"},
-			"lineItems": map[string]interface{}{
-				"type":        "array",
-				"description": "List of items purchased",
-				"items": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"description": map[string]string{"type": "string", "description": "Item name or description"},
-						"quantity":    map[string]string{"type": "number", "description": "Quantity of the item"},
-						"unitPrice":   map[string]string{"type": "number", "description": "Price per unit"},
-						"totalPrice":  map[string]string{"type": "number", "description": "Total price for this line item (quantity * unitPrice)"},
-					},
-					"required":             []string{"description", "quantity", "unitPrice", "totalPrice"},
-					"additionalProperties": false,
-				},
-			},
-		},
-		"required": []string{
-			"merchantName", "merchantAddress", "transactionDate", "transactionTime",
-			"subtotal", "tax", "tip", "total", "currency", "paymentMethod", "lastFourDigits", "lineItems",
-		},
-		"additionalProperties": false,
 	}
 
 	prompt := fmt.Sprintf(`Extract receipt/invoice data from this text.
@@ -423,7 +445,7 @@ Instructions:
 	}
 
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o",
+		"model": "gpt-5-nano",
 		"messages": []map[string]interface{}{
 			{
 				"role": "user",
@@ -440,105 +462,13 @@ Instructions:
 			"json_schema": map[string]interface{}{
 				"name":   "receipt_extraction",
 				"strict": true,
-				"schema": schema,
+				"schema": receiptJSONSchema(),
 			},
 		},
 		"temperature": 0.1,
 	}
 
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
-	}
-
-	respBytes, err := s.doRequest(ctx, bodyBytes)
-	if err != nil {
-		return &domain.OCRResult{Error: err.Error()}
-	}
-
-	var completion struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(respBytes, &completion); err != nil {
-		return &domain.OCRResult{Error: fmt.Sprintf("decode completion: %v", err)}
-	}
-	if completion.Error != nil {
-		return &domain.OCRResult{Error: completion.Error.Message}
-	}
-	if len(completion.Choices) == 0 {
-		return &domain.OCRResult{Error: "no choices in OpenAI response"}
-	}
-
-	var data openAIReceiptData
-	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &data); err != nil {
-		return &domain.OCRResult{Error: fmt.Sprintf("decode receipt data: %v", err)}
-	}
-
-	slog.Info("[OpenAI] successfully parsed text receipt",
-		"merchant", data.MerchantName,
-		"total", data.Total,
-		"items", len(data.LineItems),
-	)
-
-	lineItems := make([]domain.LineItem, 0, len(data.LineItems))
-	for _, item := range data.LineItems {
-		unitPrice := item.UnitPrice
-		if unitPrice == 0 && item.Quantity != 0 {
-			unitPrice = item.TotalPrice / item.Quantity
-		}
-		lineItems = append(lineItems, domain.LineItem{
-			Description: item.Description,
-			Quantity:    item.Quantity,
-			UnitPrice:   unitPrice,
-			Price:       item.TotalPrice,
-		})
-	}
-
-	// Build a human-readable raw text summary (same format as ParseImage).
-	cur := data.Currency
-	if cur == "" {
-		cur = "USD"
-	}
-	var rawBuf bytes.Buffer
-	fmt.Fprintf(&rawBuf, "Merchant: %s\n", data.MerchantName)
-	fmt.Fprintf(&rawBuf, "Date: %s\n", data.TransactionDate)
-	fmt.Fprintf(&rawBuf, "Time: %s\n", data.TransactionTime)
-	fmt.Fprintf(&rawBuf, "Subtotal: %.2f %s\n", data.Subtotal, cur)
-	fmt.Fprintf(&rawBuf, "Tax: %.2f %s\n", data.Tax, cur)
-	fmt.Fprintf(&rawBuf, "Tip: %.2f %s\n", data.Tip, cur)
-	fmt.Fprintf(&rawBuf, "Total: %.2f %s\n", data.Total, cur)
-	rawBuf.WriteString("Items:\n")
-	for _, item := range lineItems {
-		fmt.Fprintf(&rawBuf, "%.gx %s - %.2f %s\n", item.Quantity, item.Description, item.Price, cur)
-	}
-
-	subtotal := data.Subtotal
-	tax := data.Tax
-	tip := data.Tip
-	total := data.Total
-
-	return &domain.OCRResult{
-		RawText:         rawBuf.String(),
-		LineItems:       lineItems,
-		MerchantName:    data.MerchantName,
-		MerchantAddress: data.MerchantAddress,
-		TransactionDate: data.TransactionDate,
-		TransactionTime: data.TransactionTime,
-		Subtotal:        &subtotal,
-		Tax:             &tax,
-		Tip:             &tip,
-		Total:           &total,
-		Currency:        data.Currency,
-		PaymentMethod:   data.PaymentMethod,
-		LastFourDigits:  data.LastFourDigits,
-	}
+	return json.Marshal(reqBody)
 }
 
 // ---------------------------------------------------------------------------
@@ -606,7 +536,7 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 	}
 
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o-mini",
+		"model": "gpt-5-nano",
 		"messages": []map[string]interface{}{
 			{"role": "user", "content": []map[string]interface{}{{"type": "text", "text": prompt}}},
 		},
@@ -634,9 +564,13 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 
 	var completion struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
-		Error *struct{ Message string `json:"message"` } `json:"error"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(respBytes, &completion); err != nil {
 		return nil, fmt.Errorf("decode completion: %w", err)
@@ -657,7 +591,7 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 }
 
 // CorrectCategory asks the LLM whether receipt line items suggest a different
-// Plaid PFC category than what was assigned. Uses gpt-4o-mini for cost efficiency.
+// Plaid PFC category than what was assigned. Uses GTP-5-Nano for cost efficiency.
 func (s *OpenAIService) CorrectCategory(ctx context.Context, lineItems []domain.LineItem, currentPrimary, currentDetailed string) (*domain.CategoryCorrectionResult, error) {
 	if s.apiKey == "" {
 		return nil, fmt.Errorf("OpenAI API key not configured")
@@ -709,7 +643,7 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 	}
 
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o-mini",
+		"model": "gpt-5-nano",
 		"messages": []map[string]interface{}{
 			{"role": "user", "content": []map[string]interface{}{{"type": "text", "text": prompt}}},
 		},
@@ -737,9 +671,13 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 
 	var completion struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
-		Error *struct{ Message string `json:"message"` } `json:"error"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(respBytes, &completion); err != nil {
 		return nil, fmt.Errorf("decode completion: %w", err)

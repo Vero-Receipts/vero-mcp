@@ -9,7 +9,7 @@ Works with any MCP-compatible AI client.
 Vero MCP connects to [Plaid](https://plaid.com) to pull your bank transactions and exposes tools for:
 
 - **View transactions** with filtering by date, amount, category, merchant
-- **Scan receipts** via image upload with OCR (powered by OpenAI GPT-4o)
+- **Scan receipts** via image upload with OCR (powered by OpenAI GTP-5-Nano)
 - **Auto-match receipts to transactions** using a deterministic scoring pipeline with optional LLM disambiguation
 - **Manually match/unmatch** receipts and transactions
 - **Add notes** to transactions and receipts
@@ -93,7 +93,7 @@ When a receipt is scanned, Vero runs a deterministic matching pipeline:
 1. **Amount scoring** — compares receipt total vs transaction amount (within 20% tolerance, wider for foreign currency)
 2. **Date scoring** — compares receipt date vs transaction date (within 5 days)
 3. **Merchant scoring** — normalizes names, strips POS prefixes (SQ\*, TST\*, etc.), checks substrings, edit distance, word overlap
-4. **LLM disambiguation** (optional) — if OpenAI is configured and the merchant match is ambiguous, asks GPT-4o-mini to confirm
+4. **LLM disambiguation** (optional) — if OpenAI is configured and the merchant match is ambiguous, asks GTP-5-Nano-mini to confirm
 
 High-confidence matches are auto-linked. Lower-confidence matches are suggested for user confirmation.
 
