@@ -21,7 +21,7 @@ import (
 
 const openAIURL = "https://api.openai.com/v1/chat/completions"
 
-// OpenAIService uses GPT-4o Vision to parse receipt images into structured data.
+// OpenAIService uses GTP-5-Nano Vision to parse receipt images into structured data.
 type OpenAIService struct {
 	apiKey     string
 	httpClient *http.Client
@@ -90,7 +90,7 @@ func (s *OpenAIService) doRequest(ctx context.Context, bodyBytes []byte) ([]byte
 	return respBytes, nil
 }
 
-// openAIReceiptData is the structured schema returned by GPT-4o.
+// openAIReceiptData is the structured schema returned by GTP-5-Nano.
 type openAIReceiptData struct {
 	MerchantName    string           `json:"merchantName"`
 	MerchantAddress string           `json:"merchantAddress"`
@@ -130,7 +130,7 @@ func mimeTypeFromPath(filePath string) string {
 	return "image/jpeg"
 }
 
-// ParseImage sends the receipt image to GPT-4o Vision and returns a structured OCRResult.
+// ParseImage sends the receipt image to GTP-5-Nano Vision and returns a structured OCRResult.
 func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain.OCRResult {
 	if s.apiKey == "" {
 		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
@@ -148,7 +148,7 @@ func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain
 	return s.ParseImageData(ctx, imageBytes, mimeType)
 }
 
-// ParseImageData sends the receipt image bytes to GPT-4o Vision and returns a structured OCRResult.
+// ParseImageData sends the receipt image bytes to GTP-5-Nano Vision and returns a structured OCRResult.
 func (s *OpenAIService) ParseImageData(ctx context.Context, imageBytes []byte, mimeType string) *domain.OCRResult {
 	if s.apiKey == "" {
 		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
@@ -193,7 +193,7 @@ func BuildImageReceiptRequest(imageBytes []byte, mimeType string) ([]byte, error
 	schema := receiptJSONSchema()
 
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o",
+		"model": "gpt-5-nano",
 		"messages": []map[string]interface{}{
 			{
 				"role": "user",
@@ -367,7 +367,7 @@ func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 }
 
 // ParseTextAsReceipt sends text (e.g. extracted from an email body or PDF)
-// to GPT-4o for structured receipt extraction. This is the same underlying
+// to GTP-5-Nano for structured receipt extraction. This is the same underlying
 // call that host applications use for email-body receipt parsing.
 // The method is exported so that wrapper applications can call it directly.
 func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contextLabel string, receivedAt *time.Time) *domain.OCRResult {
@@ -445,7 +445,7 @@ Instructions:
 	}
 
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o",
+		"model": "gpt-5-nano",
 		"messages": []map[string]interface{}{
 			{
 				"role": "user",
@@ -536,7 +536,7 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 	}
 
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o-mini",
+		"model": "gpt-5-nano",
 		"messages": []map[string]interface{}{
 			{"role": "user", "content": []map[string]interface{}{{"type": "text", "text": prompt}}},
 		},
@@ -564,9 +564,13 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 
 	var completion struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
-		Error *struct{ Message string `json:"message"` } `json:"error"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(respBytes, &completion); err != nil {
 		return nil, fmt.Errorf("decode completion: %w", err)
@@ -587,7 +591,7 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 }
 
 // CorrectCategory asks the LLM whether receipt line items suggest a different
-// Plaid PFC category than what was assigned. Uses gpt-4o-mini for cost efficiency.
+// Plaid PFC category than what was assigned. Uses GTP-5-Nano for cost efficiency.
 func (s *OpenAIService) CorrectCategory(ctx context.Context, lineItems []domain.LineItem, currentPrimary, currentDetailed string) (*domain.CategoryCorrectionResult, error) {
 	if s.apiKey == "" {
 		return nil, fmt.Errorf("OpenAI API key not configured")
@@ -639,7 +643,7 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 	}
 
 	reqBody := map[string]interface{}{
-		"model": "gpt-4o-mini",
+		"model": "gpt-5-nano",
 		"messages": []map[string]interface{}{
 			{"role": "user", "content": []map[string]interface{}{{"type": "text", "text": prompt}}},
 		},
@@ -667,9 +671,13 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 
 	var completion struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
-		Error *struct{ Message string `json:"message"` } `json:"error"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(respBytes, &completion); err != nil {
 		return nil, fmt.Errorf("decode completion: %w", err)
