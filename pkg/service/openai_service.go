@@ -137,7 +137,7 @@ func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain
 		return &domain.OCRResult{Error: "OpenAI API key not configured"}
 	}
 
-	slog.Info("[OpenAI] parsing receipt image", "path", filePath)
+	slog.Info("[OpenAI] parsing receipt image")
 
 	imageBytes, err := os.ReadFile(filePath)
 	if err != nil {
@@ -168,8 +168,6 @@ func (s *OpenAIService) ParseImageData(ctx context.Context, imageBytes []byte, m
 	result := ParseReceiptCompletion(respBytes)
 	if result.Error == "" {
 		slog.Info("[OpenAI] successfully parsed receipt",
-			"merchant", result.MerchantName,
-			"total", derefFloat(result.Total),
 			"items", len(result.LineItems),
 		)
 	}
@@ -393,8 +391,6 @@ func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contex
 	result := ParseReceiptCompletion(respBytes)
 	if result.Error == "" {
 		slog.Info("[OpenAI] successfully parsed text receipt",
-			"merchant", result.MerchantName,
-			"total", derefFloat(result.Total),
 			"items", len(result.LineItems),
 		)
 	}
