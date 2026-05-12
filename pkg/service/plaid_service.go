@@ -198,10 +198,8 @@ func (s *PlaidService) ExchangePublicToken(ctx context.Context, userID uuid.UUID
 					slog.Warn("duplicate item detected",
 						"user_id", userID,
 						"institution_id", newInstitutionID,
-						"account_name", newAcct.GetName(),
-						"account_mask", newAcct.GetMask(),
 					)
-					return "", fmt.Errorf("account already linked: %s (...%s)", newAcct.GetName(), newAcct.GetMask())
+					return "", fmt.Errorf("account already linked at this institution")
 				}
 			}
 		}
@@ -404,17 +402,8 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 				merchantID := s.resolveMerchantID(ctx, tx)
 				categoryJSON, _ := json.Marshal(tx.GetCategory())
 
-				// Debug: log every field relevant to display so discrepancies between
-				// what Plaid returns, what the DB stores, and what the UI shows are easy to spot.
-				merchantNameStr := ""
-				if merchantName != nil {
-					merchantNameStr = *merchantName
-				}
-				slog.Info("plaid tx raw fields",
+				slog.Debug("plaid tx raw fields",
 					"tx_id", tx.GetTransactionId(),
-					"name", tx.GetName(),
-					"merchant_name", merchantNameStr,
-					"amount", tx.GetAmount(),
 					"date", tx.GetDate(),
 					"pending", tx.GetPending(),
 					"payment_channel", tx.GetPaymentChannel(),
@@ -429,13 +418,11 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 				// Log what Plaid is sending for the first few transactions
 				dtVal, dtOk := tx.GetDatetimeOk()
 				authDtVal, authDtOk := tx.GetAuthorizedDatetimeOk()
-				slog.Info("plaid transaction datetime fields",
+				slog.Debug("plaid transaction datetime fields",
 					"tx_id", tx.GetTransactionId(),
 					"date", tx.GetDate(),
 					"datetime_ok", dtOk,
-					"datetime_val", dtVal,
 					"auth_datetime_ok", authDtOk,
-					"auth_datetime_val", authDtVal,
 				)
 
 				// Option 1: Try Datetime field

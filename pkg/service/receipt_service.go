@@ -949,5 +949,5 @@ func (s *ReceiptService) GenerateThumbnailAsync(ctx context.Context, receiptID u
 		return
 	}
 
-	slog.Info("thumbnail generated successfully", "receipt_id", receiptID, "url", thumbnailURL)
+	slog.Info("thumbnail generated successfully", "receipt_id", receiptID)
 }
