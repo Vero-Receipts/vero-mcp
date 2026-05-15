@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -45,6 +46,8 @@ func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Re
 		receiptMerchant = *receipt.MerchantName
 	}
 
+	slog.Debug("scorer: starting", "receipt_amount", receiptAmount, "receipt_date", receiptDate.Format("2006-01-02"), "is_non_usd", isNonUSD, "candidate_count", len(candidates))
+
 	var scored []domain.CandidateScores
 	for _, tx := range candidates {
 		cs := domain.CandidateScores{TransactionID: tx.TransactionID}
@@ -52,25 +55,29 @@ func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Re
 		// --- Amount Score ---
 		txAbs := math.Abs(tx.Amount)
 		if txAbs == 0 {
+			slog.Debug("scorer: dropped — zero amount", "tx_id", tx.TransactionID, "tx_amount", tx.Amount)
 			continue
 		}
 		amountDiffPct := math.Abs(receiptAmount-txAbs) / math.Max(receiptAmount, txAbs) * 100
 		cs.AmountDiffPct = amountDiffPct
 		cs.AmountScore = scoreAmount(amountDiffPct, isNonUSD)
 		if cs.AmountScore == 0 {
-			continue // hard drop
+			slog.Debug("scorer: dropped — amount too far", "tx_id", tx.TransactionID, "tx_amount", tx.Amount, "receipt_amount", receiptAmount, "diff_pct", amountDiffPct)
+			continue
 		}
 
 		// --- Date Score ---
 		txDate, err := time.Parse("2006-01-02", tx.Date)
 		if err != nil {
+			slog.Debug("scorer: dropped — date parse failed", "tx_id", tx.TransactionID, "tx_date_raw", tx.Date, "error", err)
 			continue
 		}
 		daysDiff := int(math.Abs(receiptDate.Sub(txDate).Hours() / 24))
 		cs.DateDiffDays = daysDiff
 		cs.DateScore = scoreDate(daysDiff)
 		if cs.DateScore == 0 {
-			continue // hard drop
+			slog.Debug("scorer: dropped — date too far", "tx_id", tx.TransactionID, "tx_date", tx.Date, "days_diff", daysDiff)
+			continue
 		}
 
 		// --- Merchant Score (deterministic) ---
@@ -83,6 +90,7 @@ func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Re
 		// --- Composite ---
 		cs.CompositeScore = cs.AmountScore*0.35 + cs.DateScore*0.25 + cs.MerchantScore*0.40
 
+		slog.Debug("scorer: candidate passed", "tx_id", tx.TransactionID, "amount_score", cs.AmountScore, "date_score", cs.DateScore, "merchant_score", cs.MerchantScore, "composite", cs.CompositeScore)
 		scored = append(scored, cs)
 	}
 
