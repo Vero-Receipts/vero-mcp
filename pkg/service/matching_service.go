@@ -137,6 +137,8 @@ func (s *MatchingService) MatchReceipt(ctx context.Context, userID uuid.UUID, re
 	// --- Stage 2: Deterministic Scoring ---
 	scored := s.scoringSvc.ScoreCandidates(ctx, receipt, candidates)
 	if len(scored) == 0 {
+		slog.Debug("match-pipeline: all candidates dropped by scorer",
+			"receipt_id", receipt.ID, "candidate_count", len(candidates))
 		return nil, nil
 	}
 
@@ -245,6 +247,18 @@ func (s *MatchingService) evaluateCandidate(ctx context.Context, receipt *domain
 
 	default:
 		// Low merchant score — skip.
+		slog.Debug("match-pipeline: candidate rejected",
+			"receipt_id", receipt.ID,
+			"tx_id", cs.TransactionID,
+			"merchant_score", cs.MerchantScore,
+			"merchant_method", cs.MerchantMethod,
+			"amount_score", cs.AmountScore,
+			"date_score", cs.DateScore,
+			"composite_score", cs.CompositeScore,
+			"receipt_merchant", receiptMerchant,
+			"tx_merchant", txMerchant,
+			"tx_name", tx.Name,
+		)
 		s.logAudit(ctx, receipt, cs, false, nil, "rejected",
 			fmt.Sprintf("merchant score too low: %.2f (%s)", cs.MerchantScore, cs.MerchantMethod))
 		return nil, nil
@@ -380,6 +394,8 @@ func (s *MatchingService) logAudit(ctx context.Context, receipt *domain.Receipt,
 		Reason:             reason,
 	}
 	if err := s.auditRepo.Create(ctx, entry); err != nil {
-		slog.Error("match-audit: failed to log", "error", err)
+		slog.Error("match-audit: failed to log", "error", err,
+			"receipt_id", receipt.ID, "tx_id", cs.TransactionID,
+			"outcome", outcome, "reason", reason)
 	}
 }
