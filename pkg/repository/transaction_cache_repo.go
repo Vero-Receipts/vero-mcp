@@ -453,13 +453,13 @@ func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, 
 	var idStr, userIDStr string
 	var merchantIDStr sql.NullString
 	var mCanonical, mLogo sql.NullString
-	var dt, syncedAt, correctedAt ScannableTime
+	var dateVal, dt, syncedAt, correctedAt ScannableTime
 	var categoryStr string
 	var pendingVal ScannableBool
 
 	err := s.Scan(
 		&idStr, &userIDStr, &t.TransactionID, &t.AccountID,
-		&t.Amount, &t.Date, &dt, &t.Name,
+		&t.Amount, &dateVal, &dt, &t.Name,
 		&merchantIDStr, &categoryStr, &t.PFCPrimary, &t.PFCDetailed, &t.PaymentChannel,
 		&pendingVal, &syncedAt, &t.CorrectedPFCPrimary, &t.CorrectedPFCDetailed, &correctedAt,
 		&mCanonical, &mLogo,
@@ -470,6 +470,9 @@ func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, 
 
 	t.ID = ScanUUID(idStr)
 	t.UserID = ScanUUID(userIDStr)
+	if dateVal.Val != nil {
+		t.Date = dateVal.Val.Format("2006-01-02")
+	}
 	if merchantIDStr.Valid {
 		mid := ScanUUID(merchantIDStr.String)
 		t.MerchantID = &mid
