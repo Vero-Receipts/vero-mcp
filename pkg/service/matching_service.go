@@ -255,9 +255,6 @@ func (s *MatchingService) evaluateCandidate(ctx context.Context, receipt *domain
 			"amount_score", cs.AmountScore,
 			"date_score", cs.DateScore,
 			"composite_score", cs.CompositeScore,
-			"receipt_merchant", receiptMerchant,
-			"tx_merchant", txMerchant,
-			"tx_name", tx.Name,
 		)
 		s.logAudit(ctx, receipt, cs, false, nil, "rejected",
 			fmt.Sprintf("merchant score too low: %.2f (%s)", cs.MerchantScore, cs.MerchantMethod))
