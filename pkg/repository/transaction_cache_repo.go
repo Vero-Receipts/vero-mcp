@@ -473,9 +473,11 @@ func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, 
 	if merchantIDStr.Valid {
 		mid := ScanUUID(merchantIDStr.String)
 		t.MerchantID = &mid
-		t.Merchant = &domain.Merchant{ID: mid, CanonicalName: mCanonical.String}
-		if mLogo.Valid {
-			t.Merchant.LogoCDNURL = &mLogo.String
+		if mCanonical.Valid {
+			t.Merchant = &domain.Merchant{ID: mid, CanonicalName: mCanonical.String}
+			if mLogo.Valid {
+				t.Merchant.LogoCDNURL = &mLogo.String
+			}
 		}
 	}
 	t.Pending = pendingVal.Val
