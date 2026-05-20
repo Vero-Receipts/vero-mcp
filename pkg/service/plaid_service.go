@@ -25,6 +25,24 @@ type PlaidService struct {
 	receiptSvc    *ReceiptService
 	encryptionKey string // optional; empty = no encryption (plain text tokens)
 	redirectURI   string
+	// Minimum interval between billable Plaid /transactions/refresh calls per
+	// Item. Zero (the default) disables the cooldown — callers always get a
+	// fresh refresh. Enable with SetRefreshCooldown if you want to cap
+	// per-Item refresh frequency (e.g., for cost control).
+	refreshCooldown time.Duration
+}
+
+// SetRefreshCooldown installs a per-Item cooldown on RefreshTransactions.
+// When the cooldown is non-zero, the service consults each Item's
+// LastRefreshedAt before calling Plaid and skips Items refreshed within the
+// last `d`. On a successful Plaid call, LastRefreshedAt is stamped via the
+// repository so the cooldown survives process restarts.
+//
+// Default is zero (no cooldown). Set this if your deployment is paying
+// per-call for /transactions/refresh and wants to cap how often a given
+// Item can be refreshed.
+func (s *PlaidService) SetRefreshCooldown(d time.Duration) {
+	s.refreshCooldown = d
 }
 
 func NewPlaidService(
@@ -616,17 +634,32 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 }
 
 // RefreshTransactions asks Plaid to immediately pull fresh data from the
-// financial institution for all items belonging to the user. This is a
-// fire-and-continue operation — Plaid processes the refresh asynchronously
-// and will deliver updates via webhook, but we also do an immediate sync
-// so any already-available changes are captured right away.
+// financial institution for the user's items. This is a fire-and-continue
+// operation — Plaid processes the refresh asynchronously and will deliver
+// updates via webhook. The caller typically follows up with SyncTransactions
+// so the response carries the current cache.
+//
+// If a refresh cooldown is configured via SetRefreshCooldown, per-Item Plaid
+// calls within the cooldown window are skipped (and LastRefreshedAt is
+// stamped on each successful call so the cooldown survives restarts).
+// With the default zero cooldown, every Item is refreshed unconditionally.
 func (s *PlaidService) RefreshTransactions(ctx context.Context, userID uuid.UUID) error {
 	items, err := s.itemRepo.FindByUserID(ctx, userID)
 	if err != nil {
 		return err
 	}
 
+	now := time.Now()
 	for _, item := range items {
+		if s.refreshCooldown > 0 && item.LastRefreshedAt != nil && now.Sub(*item.LastRefreshedAt) < s.refreshCooldown {
+			slog.Debug("skipping refresh: within cooldown",
+				"item_id", item.ItemID,
+				"last_refreshed_at", item.LastRefreshedAt.Format(time.RFC3339),
+				"cooldown", s.refreshCooldown,
+			)
+			continue
+		}
+
 		accessToken, err := crypto.DecryptToken(item.AccessToken, s.encryptionKey)
 		if err != nil {
 			slog.Error("decrypt access token for refresh", "error", err, "item_id", item.ItemID)
@@ -638,8 +671,11 @@ func (s *PlaidService) RefreshTransactions(ctx context.Context, userID uuid.UUID
 		if err != nil {
 			// Non-fatal: Plaid may reject the refresh if one is already in progress
 			slog.Warn("transactions refresh request failed", "error", err, "item_id", item.ItemID)
-		} else {
-			slog.Info("triggered transactions refresh", "item_id", item.ItemID)
+			continue
+		}
+		slog.Info("triggered transactions refresh", "item_id", item.ItemID)
+		if err := s.itemRepo.UpdateLastRefreshedAt(ctx, item.ID, now); err != nil {
+			slog.Warn("failed to stamp last_refreshed_at", "error", err, "item_id", item.ItemID)
 		}
 	}
 

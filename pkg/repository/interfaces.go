@@ -19,6 +19,7 @@ type PlaidItemRepository interface {
 	FindByUserID(ctx context.Context, userID uuid.UUID) ([]domain.PlaidItem, error)
 	FindByItemID(ctx context.Context, itemID string) (*domain.PlaidItem, error)
 	UpdateSyncCursor(ctx context.Context, id uuid.UUID, cursor string) error
+	UpdateLastRefreshedAt(ctx context.Context, id uuid.UUID, t time.Time) error
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 

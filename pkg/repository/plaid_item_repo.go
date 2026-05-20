@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/Vero-Receipts/vero-mcp/pkg/domain"
@@ -48,7 +49,7 @@ func (r *PlaidItemRepo) Create(ctx context.Context, item *domain.PlaidItem) erro
 }
 
 var plaidItemCols = []string{
-	"id", "user_id", "item_id", "access_token", "sync_cursor", "created_at", "updated_at",
+	"id", "user_id", "item_id", "access_token", "sync_cursor", "last_refreshed_at", "created_at", "updated_at",
 }
 
 func (r *PlaidItemRepo) FindByUserID(ctx context.Context, userID uuid.UUID) ([]domain.PlaidItem, error) {
@@ -105,6 +106,22 @@ func (r *PlaidItemRepo) UpdateSyncCursor(ctx context.Context, id uuid.UUID, curs
 	return nil
 }
 
+func (r *PlaidItemRepo) UpdateLastRefreshedAt(ctx context.Context, id uuid.UUID, t time.Time) error {
+	res, err := r.SQ.Update("plaid_items").
+		Set("last_refreshed_at", t).
+		Set("updated_at", sq.Expr("CURRENT_TIMESTAMP")).
+		Where(sq.Eq{"id": id.String()}).
+		ExecContext(ctx)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 func (r *PlaidItemRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	res, err := r.SQ.Delete("plaid_items").
 		Where(sq.Eq{"id": id.String()}).
@@ -127,10 +144,10 @@ func (r *PlaidItemRepo) scanPlaidItem(s rowScanner) (*domain.PlaidItem, error) {
 	var item domain.PlaidItem
 	var idStr, userIDStr string
 	var syncCursor sql.NullString
-	var createdAt, updatedAt ScannableTime
+	var lastRefreshedAt, createdAt, updatedAt ScannableTime
 
 	err := s.Scan(&idStr, &userIDStr, &item.ItemID, &item.AccessToken,
-		&syncCursor, &createdAt, &updatedAt)
+		&syncCursor, &lastRefreshedAt, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +155,7 @@ func (r *PlaidItemRepo) scanPlaidItem(s rowScanner) (*domain.PlaidItem, error) {
 	item.ID = ScanUUID(idStr)
 	item.UserID = ScanUUID(userIDStr)
 	item.SyncCursor = syncCursor.String
+	item.LastRefreshedAt = lastRefreshedAt.Val
 	if createdAt.Val != nil {
 		item.CreatedAt = *createdAt.Val
 	}
