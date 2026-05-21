@@ -328,11 +328,13 @@ func (s *ReceiptService) BatchScan(ctx context.Context, userID uuid.UUID, dirPat
 			continue
 		}
 
-		// Save image to storage.
+		// Save image to storage (private; host resolves to presigned URL at read time).
 		imageKey := uuid.New().String() + ext
 		var imageURL string
 		if storageSvc != nil {
-			imageURL, _ = storageSvc.UploadFile(ctx, imageKey, bytes.NewReader(imageBytes), mimeType)
+			if err := storageSvc.UploadPrivate(ctx, imageKey, bytes.NewReader(imageBytes), mimeType); err == nil {
+				imageURL = imageKey
+			}
 		}
 
 		scanResult, err := s.Scan(ctx, userID, imageBytes, mimeType, imageURL, nil, nil)
@@ -913,11 +915,13 @@ func (s *ReceiptService) GenerateThumbnailAsync(ctx context.Context, receiptID u
 
 		key := fmt.Sprintf("receipts/%s/%s", receipt.UserID.String(), thumbFilename)
 
-		thumbnailURL, err = s.storageSvc.UploadFile(ctx, key, bytes.NewReader(thumbnailBytes), "image/png")
-		if err != nil {
+		if err := s.storageSvc.UploadPrivate(ctx, key, bytes.NewReader(thumbnailBytes), "image/png"); err != nil {
 			slog.Error("thumbnail upload failed", "error", err, "receipt_id", receiptID)
 			return
 		}
+		// Persist the object key; host resolves to a short-lived presigned URL
+		// at read time so the underlying object can remain private.
+		thumbnailURL = key
 	} else {
 		// Local filesystem fallback
 		receipt, err := s.receiptRepo.FindByID(ctx, receiptID)
