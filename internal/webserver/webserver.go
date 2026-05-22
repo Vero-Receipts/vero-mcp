@@ -317,14 +317,14 @@ func (w *LocalWebServer) handleReceiptUpload() http.HandlerFunc {
 		// Determine MIME type from filename.
 		mimeType := mimeFromFilename(header.Filename)
 
-		// Save image to local storage.
+		// Save image to local storage (private; host resolves to presigned URL at read time).
 		imageKey := uuid.New().String() + extFromFilename(header.Filename)
 		imageURL := ""
 		if w.storageSvc != nil {
-			var err2 error
-			imageURL, err2 = w.storageSvc.UploadFile(r.Context(), imageKey, bytes.NewReader(imageData), mimeType)
-			if err2 != nil {
+			if err2 := w.storageSvc.UploadPrivate(r.Context(), imageKey, bytes.NewReader(imageData), mimeType); err2 != nil {
 				slog.Warn("failed to save receipt image locally", "error", err2)
+			} else {
+				imageURL = imageKey
 			}
 		}
 
