@@ -352,9 +352,11 @@ func (r *TransactionCacheRepo) FindUnmatchedByDateRange(ctx context.Context, use
 }
 
 func (r *TransactionCacheRepo) FindUnmatchedTight(ctx context.Context, userID uuid.UUID, amount float64, dateStr string, isFX bool) ([]domain.Transaction, error) {
-	tolerance := 0.05
+	// Tolerances match the scorer's outer acceptance boundary so no valid
+	// candidate is excluded before scoring gets a chance to evaluate it.
+	tolerance := 0.20
 	if isFX {
-		tolerance = 0.15
+		tolerance = 0.40
 	}
 
 	rows, err := r.SQ.Select(txnSelectCols()...).
@@ -363,10 +365,11 @@ func (r *TransactionCacheRepo) FindUnmatchedTight(ctx context.Context, userID uu
 		Where(sq.Eq{"t.user_id": userID.String()}).
 		Where(sq.GtOrEq{"t.amount": amount * (1 - tolerance)}).
 		Where(sq.LtOrEq{"t.amount": amount * (1 + tolerance)}).
-		Where(sq.GtOrEq{"t.date": addDays(dateStr, -2)}).
-		Where(sq.LtOrEq{"t.date": addDays(dateStr, 2)}).
+		Where(sq.GtOrEq{"t.date": addDays(dateStr, -4)}).
+		Where(sq.LtOrEq{"t.date": addDays(dateStr, 4)}).
 		Where("NOT EXISTS (SELECT 1 FROM receipt_matches WHERE transaction_id = t.transaction_id)").
 		OrderBy("t.date DESC").
+		Limit(20).
 		QueryContext(ctx)
 	if err != nil {
 		return nil, err

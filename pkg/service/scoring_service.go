@@ -59,11 +59,18 @@ func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Re
 			continue
 		}
 		amountDiffPct := math.Abs(receiptAmount-txAbs) / math.Max(receiptAmount, txAbs) * 100
+		// chargeExceeds: bank charged more than the receipt total. Common when
+		// fees, surcharges, or other charges are added after the receipt is
+		// printed (applies across many merchant types, not just restaurants).
+		chargeExceeds := txAbs > receiptAmount
 		cs.AmountDiffPct = amountDiffPct
-		cs.AmountScore = scoreAmount(amountDiffPct, isNonUSD)
+		cs.AmountScore = scoreAmount(amountDiffPct, isNonUSD, chargeExceeds)
 		if cs.AmountScore == 0 {
 			slog.Debug("scorer: dropped — amount too far", "tx_id", tx.TransactionID, "tx_amount", tx.Amount, "receipt_amount", receiptAmount, "diff_pct", amountDiffPct)
 			continue
+		}
+		if chargeExceeds && amountDiffPct > 5 && amountDiffPct <= 35 {
+			cs.ChargeExceedsReceipt = true
 		}
 
 		// --- Date Score ---
@@ -115,11 +122,28 @@ func (s *ScoringService) isNonUSD(receipt *domain.Receipt) bool {
 }
 
 // scoreAmount returns 0-1 based on percentage difference.
-func scoreAmount(pctDiff float64, isNonUSD bool) float64 {
+// chargeExceeds indicates the transaction amount exceeds the receipt total —
+// a common pattern when fees or other charges are applied after receipt
+// printing. A gentler penalty is applied to keep these candidates visible.
+func scoreAmount(pctDiff float64, isNonUSD bool, chargeExceeds bool) float64 {
 	maxPct := 20.0
 	if isNonUSD {
 		maxPct = 40.0 // wider FX tolerance
 	}
+
+	// When the bank charged more than the receipt, apply a floor so the
+	// candidate is not silently dropped before merchant/date scoring runs.
+	if chargeExceeds && pctDiff > 5 {
+		switch {
+		case pctDiff <= 20:
+			return 0.75
+		case pctDiff <= 35:
+			return 0.55
+		default:
+			return 0 // DROP — too large to be a realistic tip
+		}
+	}
+
 	switch {
 	case pctDiff <= 0.5:
 		return 1.0
