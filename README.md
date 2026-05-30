@@ -121,13 +121,29 @@ Everything is stored locally:
   .env           # API credentials
 ```
 
-## Running tests
+## Testing
+
+### Running all tests
 
 ```bash
-go test ./... -v -count=1 -timeout=180s
+go test ./... -count=1
 ```
 
-Repository tests use an in-memory SQLite database — no external dependencies needed.
+### Golden file tests
+
+Golden tests verify OpenAI prompt output against stored responses in `pkg/service/testdata/golden/`. In CI, responses are replayed — no API calls are made.
+
+**Capture a new golden file** (required when adding a test case or changing a prompt):
+
+```bash
+# New test case — captured automatically when golden file is missing
+OPENAI_API_KEY=sk-... go test ./pkg/service/... -run TestGolden -v
+
+# Prompt changed — recapture only files whose prompt hash changed
+UPDATE_GOLDEN=true OPENAI_API_KEY=sk-... go test ./pkg/service/... -run TestGolden -v
+```
+
+`OPENAI_API_KEY` can also be set in a `.env` file at the project root. After capturing, review the `.golden.json` before committing.
 
 ## Architecture
 
