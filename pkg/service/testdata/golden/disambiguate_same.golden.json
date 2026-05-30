@@ -1,0 +1,38 @@
+{
+  "request_sha256": "b284a3d62d84dd8f727f6787bf37d1d95fddb6c98a13667257b6eb197c344db2",
+  "response": {
+    "id": "chatcmpl-Dl8Azy6EJ37kkchrmj1tz90XKEHp9",
+    "object": "chat.completion",
+    "created": 1780125217,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"confidence\":0.95,\"reason\":\"SBUX is a recognized abbreviation for Starbucks; both entries refer to the same company, with STARBUCKS as an alias/variant. Not a different business.\",\"same_business\":true}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 288,
+      "completion_tokens": 703,
+      "total_tokens": 991,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 640,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

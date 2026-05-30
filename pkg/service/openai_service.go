@@ -542,7 +542,7 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 				"schema": schema,
 			},
 		},
-		"max_tokens": 256,
+		"max_completion_tokens": 2048,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -648,7 +648,7 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 				"schema": schema,
 			},
 		},
-		"max_tokens": 256,
+		"max_completion_tokens": 2048,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)

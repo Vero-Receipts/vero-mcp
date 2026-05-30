@@ -1,0 +1,38 @@
+{
+  "request_sha256": "58236f278e91138100c803be502b22065ef50f43f817673d139d7290662631a6",
+  "response": {
+    "id": "chatcmpl-Dl8AdRYGZIzQaT0NimRVqrZSyFRW3",
+    "object": "chat.completion",
+    "created": 1780125195,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"\",\"lineItems\":[{\"description\":\"New ticket (0012342449376)\",\"quantity\":1,\"totalPrice\":331.16,\"unitPrice\":331.16}],\"merchantAddress\":\"\",\"merchantName\":\"American Airlines\",\"paymentMethod\":\"Apple Pay\",\"subtotal\":331.16,\"tax\":40.24,\"tip\":0,\"total\":371.40,\"transactionDate\":\"2026-05-13\",\"transactionTime\":\"\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 2103,
+      "completion_tokens": 3567,
+      "total_tokens": 5670,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 3456,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}
