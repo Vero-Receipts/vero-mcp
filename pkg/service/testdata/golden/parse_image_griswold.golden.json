@@ -1,16 +1,16 @@
 {
-  "request_sha256": "febe94c8962ec3bd06e193017e7dcbcb6ab96be13f25d763d950deba4d46c8d5",
+  "request_sha256": "a6952c64d17b89a774786580b96f4d679445a4b8f91ff7371834ce14b4d67688",
   "response": {
-    "id": "chatcmpl-Dl89f6QlzsD29hxvowRPWjMPShBVU",
+    "id": "chatcmpl-DlxTW6jY6StF5sKDEQ2cJdcbZSR2g",
     "object": "chat.completion",
-    "created": 1780125135,
+    "created": 1780322410,
     "model": "gpt-5-nano-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"GROCERY\",\"quantity\":1,\"totalPrice\":5.99,\"unitPrice\":5.99},{\"description\":\"CHOBANI STRAWBERRY\",\"quantity\":1,\"totalPrice\":2.79,\"unitPrice\":2.79}],\"merchantAddress\":\"735 GRISWOLD ST, DETROIT, MI\",\"merchantName\":\"GRISWOLD MARKET \u0026 MEATS\",\"paymentMethod\":\"Visa\",\"subtotal\":8.78,\"tax\":0,\"tip\":0,\"total\":8.78,\"transactionDate\":\"2026-05-27\",\"transactionTime\":\"20:27\"}",
+          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"GROCERY\",\"quantity\":1,\"totalPrice\":5.99,\"unitPrice\":5.99},{\"description\":\"CHOBANI STRAWBERRY\",\"quantity\":1,\"totalPrice\":2.79,\"unitPrice\":2.79}],\"merchantAddress\":\"735 GRISWOLD ST, DETROIT, MI\",\"merchantName\":\"GRISWOLD MARKET \u0026 MEATS\",\"paymentMethod\":\"Visa\",\"subtotal\":8.78,\"tax\":0,\"tip\":0,\"total\":8.78,\"transactionDate\":\"2026-05-27\",\"transactionTime\":\"20:28\"}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 4477,
-      "completion_tokens": 1625,
-      "total_tokens": 6102,
+      "prompt_tokens": 4622,
+      "completion_tokens": 1689,
+      "total_tokens": 6311,
       "prompt_tokens_details": {
-        "cached_tokens": 3712,
+        "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 1472,
+        "reasoning_tokens": 1536,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

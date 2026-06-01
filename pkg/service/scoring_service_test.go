@@ -66,34 +66,40 @@ func TestLevenshtein(t *testing.T) {
 
 func TestScoreAmount(t *testing.T) {
 	tests := []struct {
-		name     string
-		pctDiff  float64
-		isNonUSD bool
-		want     float64
+		name          string
+		pctDiff       float64
+		isNonUSD      bool
+		chargeExceeds bool
+		want          float64
 	}{
-		// USD tiers
-		{"exact_match", 0.3, false, 1.0},
-		{"near_exact", 1.5, false, 0.95},
-		{"close", 4.0, false, 0.85},
-		{"moderate", 8.0, false, 0.70},
-		{"far", 12.0, false, 0.55},
-		{"edge_of_max", 20.0, false, 0.40},
-		{"beyond_max", 21.0, false, 0.0},
+		// USD tiers (charge does not exceed receipt)
+		{"exact_match", 0.3, false, false, 1.0},
+		{"near_exact", 1.5, false, false, 0.95},
+		{"close", 4.0, false, false, 0.85},
+		{"moderate", 8.0, false, false, 0.70},
+		{"far", 12.0, false, false, 0.55},
+		{"edge_of_max", 20.0, false, false, 0.40},
+		{"beyond_max", 21.0, false, false, 0.0},
 		// Non-USD wider tolerance
-		{"nonusd_within_wide", 35.0, true, 0.40},
-		{"nonusd_beyond_wide", 41.0, true, 0.0},
+		{"nonusd_within_wide", 35.0, true, false, 0.40},
+		{"nonusd_beyond_wide", 41.0, true, false, 0.0},
 		// Boundary values
-		{"exactly_half_pct", 0.5, false, 1.0},
-		{"just_above_half_pct", 0.51, false, 0.95},
-		{"exactly_2pct", 2.0, false, 0.95},
-		{"just_above_2pct", 2.01, false, 0.85},
+		{"exactly_half_pct", 0.5, false, false, 1.0},
+		{"just_above_half_pct", 0.51, false, false, 0.95},
+		{"exactly_2pct", 2.0, false, false, 0.95},
+		{"just_above_2pct", 2.01, false, false, 0.85},
+		// Charge exceeds receipt (bank charged more than receipt — fees/surcharges applied after printing)
+		{"charge_exceeds_small", 3.0, false, true, 0.85},   // ≤5%: falls through to normal tier
+		{"charge_exceeds_moderate", 8.0, false, true, 0.75}, // 5–20%: gentle penalty
+		{"charge_exceeds_large", 25.0, false, true, 0.55},   // 20–35%: heavier penalty, still visible
+		{"charge_exceeds_dropped", 40.0, false, true, 0.0},  // >35%: too large, DROP
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := scoreAmount(tt.pctDiff, tt.isNonUSD)
+			got := scoreAmount(tt.pctDiff, tt.isNonUSD, tt.chargeExceeds)
 			if got != tt.want {
-				t.Errorf("scoreAmount(%.2f, %v) = %.2f, want %.2f", tt.pctDiff, tt.isNonUSD, got, tt.want)
+				t.Errorf("scoreAmount(%.2f, %v, %v) = %.2f, want %.2f", tt.pctDiff, tt.isNonUSD, tt.chargeExceeds, got, tt.want)
 			}
 		})
 	}
@@ -214,7 +220,7 @@ func TestScoreCandidates(t *testing.T) {
 
 	t.Run("amount_too_far_dropped", func(t *testing.T) {
 		got := svc.ScoreCandidates(ctx, receipt, []domain.Transaction{
-			{TransactionID: "tx1", Amount: 15.0, Date: "2025-03-15"}, // 33% diff > 20%
+			{TransactionID: "tx1", Amount: 7.0, Date: "2025-03-15"}, // 30% below receipt — downward diff > 20%, no charge-exceeds path
 		})
 		if len(got) != 0 {
 			t.Errorf("expected zero candidates (amount > 20%%), got %d", len(got))

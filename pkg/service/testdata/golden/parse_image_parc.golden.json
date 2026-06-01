@@ -1,16 +1,16 @@
 {
-  "request_sha256": "9e3086028d55c4bf3a56c6215cdf1bdf32d2963e8fa29a2db0505a2750894a5a",
+  "request_sha256": "2fe316dd0fc7f8fda3631a0374358709251e6d394f2e24244a1d61930cdf9762",
   "response": {
-    "id": "chatcmpl-Dl89NVVEZFiKP9sP274jY11Hg1Ju1",
+    "id": "chatcmpl-DlxTBqcnLSrLDf8fRcHWk8Nx2cDI0",
     "object": "chat.completion",
-    "created": 1780125117,
+    "created": 1780322389,
     "model": "gpt-5-nano-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"KEY WEST SHRIMP WRAP\",\"quantity\":1,\"totalPrice\":23.0,\"unitPrice\":23.0},{\"description\":\"PARC BURGER\",\"quantity\":1,\"totalPrice\":28.0,\"unitPrice\":28.0},{\"description\":\"PARC BURGER\",\"quantity\":1,\"totalPrice\":28.0,\"unitPrice\":28.0},{\"description\":\"DIET COKE\",\"quantity\":1,\"totalPrice\":5.0,\"unitPrice\":5.0},{\"description\":\"TRUFFLE FRIES\",\"quantity\":1,\"totalPrice\":15.0,\"unitPrice\":15.0}],\"merchantAddress\":\"Parc Detroit, 800 Woodward Ave, Detroit, MI 48226\",\"merchantName\":\"Parc Detroit\",\"paymentMethod\":\"Credit Card\",\"subtotal\":99.0,\"tax\":5.94,\"tip\":20.0,\"total\":124.94,\"transactionDate\":\"2026-05-28\",\"transactionTime\":\"13:20\"}",
+          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"KEY WEST SHRIMP WRAP\",\"quantity\":1,\"totalPrice\":23,\"unitPrice\":23},{\"description\":\"PARC BURGER\",\"quantity\":1,\"totalPrice\":28,\"unitPrice\":28},{\"description\":\"PARC BURGER\",\"quantity\":1,\"totalPrice\":28,\"unitPrice\":28},{\"description\":\"DIET COKE\",\"quantity\":1,\"totalPrice\":5,\"unitPrice\":5},{\"description\":\"TRUFFLE FRIES\",\"quantity\":1,\"totalPrice\":15,\"unitPrice\":15}],\"merchantAddress\":\"800 Woodward Ave, Detroit, MI 48226\",\"merchantName\":\"Parc Detroit\",\"paymentMethod\":\"Visa\",\"subtotal\":99,\"tax\":5.94,\"tip\":20,\"total\":124.94,\"transactionDate\":\"2026-05-28\",\"transactionTime\":\"13:20\"}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 4477,
-      "completion_tokens": 2601,
-      "total_tokens": 7078,
+      "prompt_tokens": 4622,
+      "completion_tokens": 2699,
+      "total_tokens": 7321,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 2368,
+        "reasoning_tokens": 2496,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

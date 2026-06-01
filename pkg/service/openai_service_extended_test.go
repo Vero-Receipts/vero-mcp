@@ -623,10 +623,11 @@ func TestBuildTextReceiptRequest_LongTextTruncated(t *testing.T) {
 }
 
 func TestBuildTextReceiptRequest_CSSHeavyTextTruncated(t *testing.T) {
-	// 6000 chars of CSS-like text (>20 braces) with a sentinel after position 4000.
-	cssBlock := strings.Repeat("{color:red;}", 334) // 334 * 12 = 4008 chars, 334 braces each
-	sentinel := "SENTINEL_AFTER_4000"
-	bodyText := cssBlock + sentinel // 4008 + 19 = 4027 chars, with 334 `{` and 334 `}`
+	// CSS truncation only fires when body > 8000 chars AND has >20 braces.
+	// Use 8016 chars of CSS-like content followed by a sentinel that must be cut.
+	cssBlock := strings.Repeat("{color:red;}", 668) // 668 * 12 = 8016 chars, 668 braces each
+	sentinel := "SENTINEL_AFTER_8000"
+	bodyText := cssBlock + sentinel
 
 	reqBytes, err := BuildTextReceiptRequest(bodyText, "label", nil)
 	if err != nil {
@@ -635,6 +636,6 @@ func TestBuildTextReceiptRequest_CSSHeavyTextTruncated(t *testing.T) {
 
 	prompt := extractPromptText(t, reqBytes)
 	if strings.Contains(prompt, sentinel) {
-		t.Error("expected sentinel after 4000 chars to be truncated for CSS-heavy input")
+		t.Error("expected sentinel after 8000 chars to be truncated for CSS-heavy input")
 	}
 }
