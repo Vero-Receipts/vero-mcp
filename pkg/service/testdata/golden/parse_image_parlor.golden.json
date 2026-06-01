@@ -1,0 +1,38 @@
+{
+  "request_sha256": "97c41e5f0c86755f61be12a5967906d9a0e17abd7092ad838150a8c78d9db30d",
+  "response": {
+    "id": "chatcmpl-DlxtKDk9LaCPwh5yao52ZuqKyvl6A",
+    "object": "chat.completion",
+    "created": 1780324010,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"Sandy Beach\",\"quantity\":1,\"totalPrice\":3.95,\"unitPrice\":3.95}],\"merchantAddress\":\"500 Rep John Lewis Way S, Nashville, TN 37203\",\"merchantName\":\"Parlor Doughnuts\",\"paymentMethod\":\"Visa\",\"subtotal\":3.95,\"tax\":0.37,\"tip\":0,\"total\":4.32,\"transactionDate\":\"2026-05-30\",\"transactionTime\":\"09:55\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 4622,
+      "completion_tokens": 1852,
+      "total_tokens": 6474,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1728,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

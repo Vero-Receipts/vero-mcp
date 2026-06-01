@@ -245,6 +245,13 @@ func (s *MatchingService) evaluateCandidate(ctx context.Context, receipt *domain
 			}
 		}
 
+	case receiptMerchant == "" && cs.AmountScore >= 0.95 && cs.DateScore >= 0.95:
+		// No merchant info on the receipt — fall back to strict amount+date matching.
+		// AmountScore ≥ 0.95 means ≤2% diff; DateScore ≥ 0.95 means same day or next day.
+		merchantConfirmed = false
+		reason = fmt.Sprintf("no merchant on receipt, strict amount+date: %.1f%% diff, %d days",
+			cs.AmountDiffPct, cs.DateDiffDays)
+
 	default:
 		// Low merchant score — skip.
 		slog.Debug("match-pipeline: candidate rejected",
@@ -288,6 +295,8 @@ func (s *MatchingService) evaluateCandidate(ctx context.Context, receipt *domain
 	isFX := receipt.Currency != nil && *receipt.Currency != "" && !strings.EqualFold(*receipt.Currency, "USD")
 	if isFX && (receipt.TotalUSD == nil || *receipt.TotalUSD <= 0) {
 		flag = "fx_suspected"
+	} else if receiptMerchant == "" {
+		flag = "no_merchant"
 	} else if cs.ChargeExceedsReceipt {
 		flag = "amount_upward"
 	} else if cs.AmountDiffPct > 5 {

@@ -288,6 +288,28 @@ func TestGolden_ParseImage(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:       "parlor_doughnuts",
+			goldenName: "parse_image_parlor",
+			imagePath:  "testdata/images/receipt4.jpg",
+			mimeType:   "image/jpeg",
+			want: domain.OCRResult{
+				MerchantName:    "Parlor Doughnuts",
+				MerchantAddress: "500 Rep John Lewis Way S, Nashville, TN 37203",
+				TransactionDate: "2026-05-30",
+				TransactionTime: "09:55",
+				Subtotal:        floatPtr(3.95),
+				Tax:             floatPtr(0.37),
+				Tip:             floatPtr(0),
+				Total:           floatPtr(4.32),
+				Currency:        "USD",
+				PaymentMethod:   "Visa",
+				LastFourDigits:  "2676",
+				LineItems: []domain.LineItem{
+					{Description: "Sandy Beach", Quantity: 1, UnitPrice: 3.95, Price: 3.95},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
