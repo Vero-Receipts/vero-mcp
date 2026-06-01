@@ -1,0 +1,38 @@
+{
+  "request_sha256": "321fed691b18bbb4dc0c63e9cac467007ddc5da552ad013df7cc1b85922284db",
+  "response": {
+    "id": "chatcmpl-Dl8AED0wZVsJ0nGVJGfRZLlvYpjaC",
+    "object": "chat.completion",
+    "created": 1780125170,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"4242\",\"lineItems\":[{\"description\":\"Grande Latte\",\"quantity\":1,\"totalPrice\":5.45,\"unitPrice\":5.45},{\"description\":\"Blueberry Scone\",\"quantity\":1,\"totalPrice\":3.25,\"unitPrice\":3.25}],\"merchantAddress\":\"123 Main Street, Seattle, WA 98101\",\"merchantName\":\"Starbucks\",\"paymentMethod\":\"Visa\",\"subtotal\":8.7,\"tax\":0.78,\"tip\":0,\"total\":9.48,\"transactionDate\":\"2025-03-15\",\"transactionTime\":\"09:32\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 637,
+      "completion_tokens": 1168,
+      "total_tokens": 1805,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1024,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

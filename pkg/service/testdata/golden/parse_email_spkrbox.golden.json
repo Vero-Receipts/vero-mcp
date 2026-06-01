@@ -1,0 +1,38 @@
+{
+  "request_sha256": "3643f63d94e2481fff9fd87922e1cd56693c23a1aedf4f1380afba989e1b7dbd",
+  "response": {
+    "id": "chatcmpl-Dl8AMC27tcdtGzAEy3RIaugITq2lC",
+    "object": "chat.completion",
+    "created": 1780125178,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"Can Modelo\",\"quantity\":2,\"totalPrice\":12,\"unitPrice\":6}],\"merchantAddress\":\"200 Grand River Avenue, Detroit, MI 48226\",\"merchantName\":\"SPKRBOX\",\"paymentMethod\":\"Credit Card\",\"subtotal\":12,\"tax\":0,\"tip\":2.26,\"total\":14.26,\"transactionDate\":\"2026-05-25\",\"transactionTime\":\"23:17\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 784,
+      "completion_tokens": 2291,
+      "total_tokens": 3075,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 2176,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "request_sha256": "dc2b87555142849d945c07017a2b90b1a9598fc51b7ede27f9f916b7c675bf5e",
+  "response": {
+    "id": "chatcmpl-Dl8DhqTzj3FKdvlaU80Z13Z0yqDon",
+    "object": "chat.completion",
+    "created": 1780125385,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"corrected_pfc_detailed\":\"FOOD_AND_DRINK_RESTAURANT\",\"corrected_pfc_primary\":\"FOOD_AND_DRINK\",\"reason\":\"Iced latte and blueberry scone are prepared-food purchases typically made at a cafe/coffee shop, which falls under FOOD_AND_DRINK_RESTAURANT rather than GENERAL_MERCHANDISE.\",\"should_correct\":true}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 354,
+      "completion_tokens": 1371,
+      "total_tokens": 1725,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1280,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

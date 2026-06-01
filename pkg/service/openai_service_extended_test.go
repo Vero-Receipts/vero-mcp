@@ -379,3 +379,262 @@ func TestMimeTypeFromPath(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ParseReceiptCompletion
+// ---------------------------------------------------------------------------
+
+func makeCompletionResponse(t *testing.T, data openAIReceiptData) []byte {
+	t.Helper()
+	contentJSON, _ := json.Marshal(data)
+	resp := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"message": map[string]string{"content": string(contentJSON)}},
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
+
+func TestParseReceiptCompletion_Success(t *testing.T) {
+	total := 9.48
+	subtotal := 8.70
+	tax := 0.78
+	data := openAIReceiptData{
+		MerchantName:    "Starbucks",
+		TransactionDate: "2025-03-15",
+		TransactionTime: "09:32",
+		Total:           total,
+		Subtotal:        subtotal,
+		Tax:             tax,
+		Currency:        "USD",
+		PaymentMethod:   "Visa",
+		LastFourDigits:  "4242",
+		LineItems: []openAILineItem{
+			{Description: "Grande Latte", Quantity: 1, UnitPrice: 5.45, TotalPrice: 5.45},
+		},
+	}
+
+	result := ParseReceiptCompletion(makeCompletionResponse(t, data))
+
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.MerchantName != "Starbucks" {
+		t.Errorf("MerchantName = %q, want \"Starbucks\"", result.MerchantName)
+	}
+	if result.Total == nil || *result.Total != total {
+		t.Errorf("Total = %v, want %v", result.Total, total)
+	}
+	if result.TransactionDate != "2025-03-15" {
+		t.Errorf("TransactionDate = %q, want \"2025-03-15\"", result.TransactionDate)
+	}
+	if result.Currency != "USD" {
+		t.Errorf("Currency = %q, want \"USD\"", result.Currency)
+	}
+	if len(result.LineItems) != 1 {
+		t.Fatalf("LineItems count = %d, want 1", len(result.LineItems))
+	}
+	if result.LineItems[0].Description != "Grande Latte" {
+		t.Errorf("LineItems[0].Description = %q", result.LineItems[0].Description)
+	}
+}
+
+func TestParseReceiptCompletion_UnitPriceRecovered(t *testing.T) {
+	data := openAIReceiptData{
+		MerchantName: "Test",
+		Total:        10.00,
+		Currency:     "USD",
+		LineItems: []openAILineItem{
+			// UnitPrice is zero; should be recovered from TotalPrice / Quantity.
+			{Description: "Latte", Quantity: 2, UnitPrice: 0, TotalPrice: 10.00},
+		},
+	}
+
+	result := ParseReceiptCompletion(makeCompletionResponse(t, data))
+
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if len(result.LineItems) != 1 {
+		t.Fatalf("LineItems count = %d, want 1", len(result.LineItems))
+	}
+	if result.LineItems[0].UnitPrice != 5.00 {
+		t.Errorf("recovered UnitPrice = %.2f, want 5.00", result.LineItems[0].UnitPrice)
+	}
+}
+
+func TestParseReceiptCompletion_EmptyCurrencyNotDefaulted(t *testing.T) {
+	// The OCRResult.Currency field returns what the model returned (empty),
+	// not the "USD" default used only for raw text formatting.
+	data := openAIReceiptData{
+		MerchantName: "Test",
+		Total:        5.00,
+		Currency:     "", // model returned no currency
+	}
+
+	result := ParseReceiptCompletion(makeCompletionResponse(t, data))
+
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.Currency != "" {
+		t.Errorf("Currency = %q, want \"\" (OCRResult.Currency is not defaulted to USD)", result.Currency)
+	}
+}
+
+func TestParseReceiptCompletion_APIErrorField(t *testing.T) {
+	resp := map[string]interface{}{
+		"error": map[string]string{"message": "invalid_api_key"},
+	}
+	b, _ := json.Marshal(resp)
+
+	result := ParseReceiptCompletion(b)
+
+	if result.Error == "" {
+		t.Fatal("expected error for API error field")
+	}
+	if !strings.Contains(result.Error, "invalid_api_key") {
+		t.Errorf("Error = %q, want to contain \"invalid_api_key\"", result.Error)
+	}
+}
+
+func TestParseReceiptCompletion_NoChoices(t *testing.T) {
+	resp := map[string]interface{}{
+		"choices": []interface{}{},
+	}
+	b, _ := json.Marshal(resp)
+
+	result := ParseReceiptCompletion(b)
+
+	if result.Error == "" {
+		t.Fatal("expected error for empty choices")
+	}
+	if !strings.Contains(result.Error, "no choices") {
+		t.Errorf("Error = %q, want to contain \"no choices\"", result.Error)
+	}
+}
+
+func TestParseReceiptCompletion_InvalidJSON(t *testing.T) {
+	result := ParseReceiptCompletion([]byte("not json at all {{{"))
+
+	if result.Error == "" {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestParseReceiptCompletion_InvalidContentJSON(t *testing.T) {
+	resp := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"message": map[string]string{"content": "not valid json"}},
+		},
+	}
+	b, _ := json.Marshal(resp)
+
+	result := ParseReceiptCompletion(b)
+
+	if result.Error == "" {
+		t.Fatal("expected error when content is not valid JSON")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildTextReceiptRequest
+// ---------------------------------------------------------------------------
+
+// extractPromptText unmarshals a BuildTextReceiptRequest JSON body and returns
+// the prompt text from messages[0].content[0].text.
+func extractPromptText(t *testing.T, reqBytes []byte) string {
+	t.Helper()
+	var body struct {
+		Messages []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(reqBytes, &body); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if len(body.Messages) == 0 || len(body.Messages[0].Content) == 0 {
+		t.Fatal("no message content found in request")
+	}
+	return body.Messages[0].Content[0].Text
+}
+
+func TestBuildTextReceiptRequest_Basic(t *testing.T) {
+	reqBytes, err := BuildTextReceiptRequest("Receipt text here", "Email from Stripe", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(reqBytes, &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body.Model != "gpt-5-nano" {
+		t.Errorf("model = %q, want \"gpt-5-nano\"", body.Model)
+	}
+
+	prompt := extractPromptText(t, reqBytes)
+	for _, want := range []string{"merchant", "YYYY-MM-DD", "USD"} {
+		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(want)) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if !strings.Contains(prompt, "Email from Stripe") {
+		t.Error("prompt missing context label")
+	}
+	if !strings.Contains(prompt, "Receipt text here") {
+		t.Error("prompt missing input text")
+	}
+}
+
+func TestBuildTextReceiptRequest_WithReceivedAt(t *testing.T) {
+	receivedAt := time.Date(2025, 3, 20, 0, 0, 0, 0, time.UTC)
+	reqBytes, err := BuildTextReceiptRequest("some text", "label", &receivedAt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := extractPromptText(t, reqBytes)
+	if !strings.Contains(prompt, "on or before") {
+		t.Error("expected received-date constraint in prompt")
+	}
+	if !strings.Contains(prompt, "2025-03-20") {
+		t.Error("expected received date in prompt")
+	}
+}
+
+func TestBuildTextReceiptRequest_LongTextTruncated(t *testing.T) {
+	// 8000 x's followed by a sentinel that should be cut off.
+	bodyText := strings.Repeat("x", 8000) + "SENTINEL_BEYOND_8000"
+	reqBytes, err := BuildTextReceiptRequest(bodyText, "label", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := extractPromptText(t, reqBytes)
+	if strings.Contains(prompt, "SENTINEL_BEYOND_8000") {
+		t.Error("expected sentinel beyond 8000 chars to be truncated")
+	}
+}
+
+func TestBuildTextReceiptRequest_CSSHeavyTextTruncated(t *testing.T) {
+	// 6000 chars of CSS-like text (>20 braces) with a sentinel after position 4000.
+	cssBlock := strings.Repeat("{color:red;}", 334) // 334 * 12 = 4008 chars, 334 braces each
+	sentinel := "SENTINEL_AFTER_4000"
+	bodyText := cssBlock + sentinel // 4008 + 19 = 4027 chars, with 334 `{` and 334 `}`
+
+	reqBytes, err := BuildTextReceiptRequest(bodyText, "label", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := extractPromptText(t, reqBytes)
+	if strings.Contains(prompt, sentinel) {
+		t.Error("expected sentinel after 4000 chars to be truncated for CSS-heavy input")
+	}
+}

@@ -1,0 +1,46 @@
+Thank you for your order. Below is a receipt for your recent visit to SPKRBOX.
+trouble viewing this email?
+SPKRBOX
+ 200 Grand River Avenue
+ Detroit, MI 48226
+Server: KaTrell T
+Check #533
+Ordered:
+5/25/26 11:17 PM
+2 Can Modelo
+$12.00
+Subtotal
+$12.00
+Tip
+$2.26
+Total
+$14.26
+Input Type
+C (EMV Chip Read)
+VISA CREDIT
+xxxxxxxx2676
+Transaction Type
+Sale
+Authorization
+Approved
+Approval Code
+025260
+Payment ID
+dhfYKpRqqThh
+Application ID
+A0000000031010
+Application Label
+VISA CREDIT
+Device ID
+93ffc2ccdfbc1aee
+Card Reader
+BBPOS
+sorry... no refunds, returns or
+cancellations
+ Automatic Gratuity may be applied
+during special events
+Download the Local by Toast app
+Food you love without the wait.
+© Toast, Inc. 2026. All Rights Reserved.
+Privacy Statement  |  Terms of Service
+Tue May 26 03:18:28 UTC 2026
