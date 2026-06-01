@@ -156,6 +156,9 @@ func TestScoreMerchantPair(t *testing.T) {
 		{"levenshtein", "dunkin", "dunkan", 0.75, "levenshtein"},
 		// word_overlap_2: two shared meaningful words
 		{"word_overlap_2", "blue bottle roasters", "blue bottle coffee", 0.70, "word_overlap_2"},
+		// compact: Plaid canonical names stored without spaces match space-separated receipt names
+		{"compact_plaid_canonical", "parlordoughnuts", "parlor doughnuts nashville sobro", 0.85, "compact"},
+		{"compact_reverse", "parlor doughnuts nashville sobro", "parlordoughnuts", 0.85, "compact"},
 		// word_overlap_1: one shared meaningful word
 		{"word_overlap_1", "blue bottle", "blue mountain", 0.45, "word_overlap_1"},
 		// none: no overlap at any level
