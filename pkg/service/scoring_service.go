@@ -216,6 +216,14 @@ func (s *ScoringService) scoreMerchantPair(ctx context.Context, a, b string) (fl
 		return 0.90, "substring"
 	}
 
+	// 2b. Compact match: strip spaces and compare. Handles Plaid canonical names
+	// stored without spaces (e.g. "Parlordoughnuts" vs "parlor doughnuts nashville sobro").
+	compactA := strings.ReplaceAll(a, " ", "")
+	compactB := strings.ReplaceAll(b, " ", "")
+	if strings.Contains(compactA, compactB) || strings.Contains(compactB, compactA) {
+		return 0.85, "compact"
+	}
+
 	// 3. Check alias cache.
 	if s.aliasRepo != nil {
 		same, err := s.aliasRepo.AreSameMerchant(ctx, a, b)
