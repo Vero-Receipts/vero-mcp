@@ -32,4 +32,5 @@ type CandidateScores struct {
 	AmountDiffPct  float64 // for logging
 	DateDiffDays   int     // for logging
 	MerchantMethod string  // "exact", "substring", "alias", "levenshtein", "word_overlap", "none"
+	ChargeExceedsReceipt bool // true when tx charged more than receipt by 5–35% (fees/charges not on receipt)
 }

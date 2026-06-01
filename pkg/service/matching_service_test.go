@@ -449,3 +449,77 @@ func TestEvaluateCandidate_Flag_Clean(t *testing.T) {
 		t.Errorf("Flag = %q, want \"clean\"", result.Flag)
 	}
 }
+
+func testReceiptNoMerchant(total float64) *domain.Receipt {
+	d := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
+	return &domain.Receipt{
+		Date:  &d,
+		Total: &total,
+	}
+}
+
+func TestEvaluateCandidate_NoMerchant_StrictMatch(t *testing.T) {
+	audit := &mockAuditRepo{}
+	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
+
+	receipt := testReceiptNoMerchant(10.00)
+	tx := testTransaction("tx-1", 10.00, "SOME STORE")
+	// AmountScore=1.0 (exact), DateScore=1.0 (same day) — passes the strict threshold.
+	cs := testScores(0, 1.0, 1.0, "none", 0.0, 0)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected a result for exact amount+date with no merchant")
+	}
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
+	}
+	if result.Flag != "no_merchant" {
+		t.Errorf("Flag = %q, want \"no_merchant\"", result.Flag)
+	}
+	if result.Confidence > 0.75 {
+		t.Errorf("Confidence = %.4f, want <= 0.75 (capped for unconfirmed merchant)", result.Confidence)
+	}
+}
+
+func TestEvaluateCandidate_NoMerchant_AmountTooLoose(t *testing.T) {
+	audit := &mockAuditRepo{}
+	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
+
+	receipt := testReceiptNoMerchant(10.00)
+	tx := testTransaction("tx-1", 10.00, "SOME STORE")
+	// AmountScore=0.85 (≤5% diff) — below the 0.95 threshold for no-merchant path.
+	cs := testScores(0, 0.85, 1.0, "none", 3.0, 0)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result when amount score %.2f is below 0.95 with no merchant", cs.AmountScore)
+	}
+}
+
+func TestEvaluateCandidate_NoMerchant_DateTooLoose(t *testing.T) {
+	audit := &mockAuditRepo{}
+	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
+
+	receipt := testReceiptNoMerchant(10.00)
+	tx := testTransaction("tx-1", 10.00, "SOME STORE")
+	// DateScore=0.85 (2 days off) — below the 0.95 threshold for no-merchant path.
+	cs := testScores(0, 1.0, 0.85, "none", 0.0, 2)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result when date score %.2f is below 0.95 with no merchant", cs.DateScore)
+	}
+}

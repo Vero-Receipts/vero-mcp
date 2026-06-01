@@ -228,6 +228,28 @@ func BuildReceiptFromOCR(in ReceiptFromOCRInput) *domain.Receipt {
 		receipt.Currency = &ocr.Currency
 	}
 
+	// Guard against OCR returning the subtotal instead of the final total.
+	// This happens on receipts where gratuity/surcharges appear below the
+	// subtotal line and GPT misidentifies the subtotal as the "total paid".
+	if receipt.Total != nil && receipt.Subtotal != nil && *receipt.Subtotal > 0 && *receipt.Total < *receipt.Subtotal {
+		tip := 0.0
+		if receipt.Tip != nil {
+			tip = *receipt.Tip
+		}
+		tax := 0.0
+		if receipt.Tax != nil {
+			tax = *receipt.Tax
+		}
+		corrected := *receipt.Subtotal + tip + tax
+		slog.Warn("ocr: total < subtotal, correcting",
+			"user_id", in.UserID,
+			"original_total", *receipt.Total,
+			"subtotal", *receipt.Subtotal,
+			"corrected_total", corrected,
+		)
+		receipt.Total = &corrected
+	}
+
 	ClampFutureDate(receipt, in.UserID, nil)
 
 	return receipt

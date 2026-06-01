@@ -228,8 +228,10 @@ func imageReceiptPrompt() string {
 
 Instructions:
 - Extract merchant name, address, date, and time
-- List all purchased items with their quantities and prices
-- Include subtotal, tax, tip (if any), and total
+- List all purchased items with their quantities and prices, including add-ons and customizations that have their own price as separate line items; do not split a single named menu item into multiple line items
+- If a line item starts with the count (e.g. "2 Can Modelo"), move that leading count to the quantity field and use only the item name as the description
+- Do not include taxes, fees, or carrier-imposed charges as line items — those belong in the tax field
+- Include subtotal, tax, tip or gratuity (map gratuity/service charge to the tip field), and total
 - Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If the merchant address is in Mexico and the symbol is $, use MXN. If ambiguous, default to USD.
 - Identify payment method and last 4 digits of card if visible
 - If any field is not visible or unclear, use reasonable defaults (empty string for text, 0 for numbers)
@@ -246,7 +248,7 @@ func receiptJSONSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"merchantName":    map[string]string{"type": "string", "description": "Name of the merchant or store"},
-			"merchantAddress": map[string]string{"type": "string", "description": "Full address of the merchant"},
+			"merchantAddress": map[string]string{"type": "string", "description": "Street address of the merchant — do not include the merchant or business name"},
 			"transactionDate": map[string]string{"type": "string", "description": "Date of transaction in YYYY-MM-DD format"},
 			"transactionTime": map[string]string{"type": "string", "description": "Time of transaction in HH:MM format"},
 			"subtotal":        map[string]string{"type": "number", "description": "Subtotal amount before tax and tip"},
@@ -254,7 +256,7 @@ func receiptJSONSchema() map[string]interface{} {
 			"tip":             map[string]string{"type": "number", "description": "Tip amount if present, otherwise 0"},
 			"total":           map[string]string{"type": "number", "description": "Total amount paid"},
 			"currency":        map[string]string{"type": "string", "description": "ISO 4217 currency code (e.g. USD, EUR, MXN, GBP, JPY). Determine from currency symbols or text on the receipt."},
-			"paymentMethod":   map[string]string{"type": "string", "description": "Payment method used (e.g., Credit Card, Cash, Debit)"},
+			"paymentMethod":   map[string]string{"type": "string", "description": "Card brand or payment type (e.g., Visa, Mastercard, Apple Pay, Credit Card, Cash, Debit) — use the card brand name only; do not include card number digits (those go in lastFourDigits)"},
 			"lastFourDigits":  map[string]string{"type": "string", "description": "Last 4 digits of card if visible, otherwise empty string"},
 			"lineItems": map[string]interface{}{
 				"type":        "array",
@@ -397,6 +399,41 @@ func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contex
 	return result
 }
 
+// receiptTotalAnchors are keywords used to locate the "total" region of receipt
+// text so truncation preserves the items section rather than front-truncating.
+var receiptTotalAnchors = []string{"Total", "TOTAL", "Amount Due", "AMOUNT DUE", "Amount Paid", "AMOUNT PAID", "Subtotal", "SUBTOTAL"}
+
+// anchoredTruncate returns up to maxLen characters centred around the last
+// occurrence of any anchor word. Items appear before the total line, so
+// keeping 3000 chars before and 1000 after the anchor retains the full item
+// table. Falls back to front-truncation if no anchor is found.
+func anchoredTruncate(text string, maxLen int) string {
+	if len(text) <= maxLen {
+		return text
+	}
+	anchorPos := -1
+	for _, anchor := range receiptTotalAnchors {
+		if pos := strings.LastIndex(text, anchor); pos > anchorPos {
+			anchorPos = pos
+		}
+	}
+	if anchorPos < 0 {
+		return text[:maxLen]
+	}
+	start := anchorPos - 3000
+	if start < 0 {
+		start = 0
+	}
+	end := anchorPos + 1000
+	if end > len(text) {
+		end = len(text)
+	}
+	if end-start > maxLen {
+		end = start + maxLen
+	}
+	return text[start:end]
+}
+
 // BuildTextReceiptRequest constructs the chat-completions request body for
 // text-based receipt parsing (e.g. email body, extracted PDF text). Exported so
 // callers (e.g. the OpenAI Batch API path) can produce identical request
@@ -407,11 +444,12 @@ func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contex
 // `{`/`}` clusters (a sign that HTML stripping missed style blocks).
 func BuildTextReceiptRequest(bodyText, contextLabel string, receivedAt *time.Time) ([]byte, error) {
 	if len(bodyText) > 8000 {
-		bodyText = bodyText[:8000]
-	}
-	if strings.Count(bodyText, "{") > 20 && strings.Count(bodyText, "}") > 20 {
-		if len(bodyText) > 4000 {
-			bodyText = bodyText[:4000]
+		if strings.Count(bodyText, "{") > 20 && strings.Count(bodyText, "}") > 20 {
+			// CSS-like content survived HTML stripping — use anchor-aware
+			// truncation so the items table is preserved over header content.
+			bodyText = anchoredTruncate(bodyText, 4000)
+		} else {
+			bodyText = bodyText[:8000]
 		}
 	}
 
@@ -424,15 +462,16 @@ Text:
 
 Instructions:
 - Extract the merchant name, address, transaction date, and time
-- List all purchased items with quantities and prices
-- Include subtotal, tax, tip (if any), and total
+- List all purchased items with quantities and prices, including add-ons, substitutions, and modifiers as separate line items; do not include the quantity number in the description field
+- Do not include taxes, fees, or carrier-imposed charges as line items — those belong in the tax field
+- Include subtotal, tax, tip or gratuity (map gratuity/service charge to the tip field), and total
 - Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If text says "USD" or similar, use that. If ambiguous, default to USD.
 - Identify payment method and last 4 digits of card if mentioned
 - If any field is not present, use reasonable defaults (empty string for text, 0 for numbers)
 - For dates, use YYYY-MM-DD format
 - For times, use HH:MM format (24-hour)
 - All monetary amounts should be numbers (not strings)
-- The merchant name should be the company/store name`, contextLabel, bodyText)
+- The merchant name should be the actual BUSINESS name, not the payment processor — if "Stripe", "Square", "PayPal", or similar appears as the sender, use the underlying merchant name instead`, contextLabel, bodyText)
 
 	if receivedAt != nil {
 		prompt += fmt.Sprintf(`

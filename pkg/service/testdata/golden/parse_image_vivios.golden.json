@@ -1,16 +1,16 @@
 {
-  "request_sha256": "6485485f4a4a63ca58ecb1340fec7d26bb4682fb0181acccc0133c6f9c7bb62f",
+  "request_sha256": "0b6063fd61c1060acdd9ad9205dfa552104774acd45b4675705cbfe703b1563e",
   "response": {
-    "id": "chatcmpl-Dl89sqI5roJ6e7XWo2CPFZJLvcqxS",
+    "id": "chatcmpl-DlxTjZ5sCjQAVrmbk9JoSsTOJyh08",
     "object": "chat.completion",
-    "created": 1780125148,
+    "created": 1780322423,
     "model": "gpt-5-nano-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"9267\",\"lineItems\":[{\"description\":\"Ground Round Medium American\",\"quantity\":1,\"totalPrice\":18.0,\"unitPrice\":18.0},{\"description\":\"Soft Drinks\",\"quantity\":2,\"totalPrice\":7.0,\"unitPrice\":3.5},{\"description\":\"Side Dressing Ranch\",\"quantity\":1,\"totalPrice\":1.0,\"unitPrice\":1.0}],\"merchantAddress\":\"2460 Market St, Detroit, MI 48207\",\"merchantName\":\"Vivio's\",\"paymentMethod\":\"Credit Card\",\"subtotal\":26.0,\"tax\":1.14,\"tip\":5.0,\"total\":32.14,\"transactionDate\":\"2026-05-17\",\"transactionTime\":\"13:53\"}",
+          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"9267\",\"lineItems\":[{\"description\":\"Ground Round\",\"quantity\":1,\"totalPrice\":18.0,\"unitPrice\":18.0},{\"description\":\"Soft Drinks\",\"quantity\":2,\"totalPrice\":7.0,\"unitPrice\":3.5},{\"description\":\"Side Dressing Ranch\",\"quantity\":1,\"totalPrice\":1.0,\"unitPrice\":1.0}],\"merchantAddress\":\"2460 MARKET ST\",\"merchantName\":\"Vivio's\",\"paymentMethod\":\"Visa\",\"subtotal\":26.0,\"tax\":1.14,\"tip\":5.0,\"total\":32.14,\"transactionDate\":\"2026-05-17\",\"transactionTime\":\"13:53\"}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 3772,
-      "completion_tokens": 3372,
-      "total_tokens": 7144,
+      "prompt_tokens": 3917,
+      "completion_tokens": 3746,
+      "total_tokens": 7663,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 3200,
+        "reasoning_tokens": 3584,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0
