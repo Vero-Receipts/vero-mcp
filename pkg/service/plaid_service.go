@@ -82,12 +82,61 @@ func (s *PlaidService) resolveMerchantID(ctx context.Context, tx plaid.Transacti
 		entityID = e
 	}
 
-	m, err := s.merchantRepo.Upsert(ctx, name, website, logo, entityID)
+	location := extractMerchantLocation(tx)
+
+	m, err := s.merchantRepo.Upsert(ctx, name, website, logo, entityID, location)
 	if err != nil {
 		slog.Error("upsert merchant", "error", err, "merchant", name)
 		return nil
 	}
 	return &m.ID
+}
+
+// extractMerchantLocation maps the Plaid transaction's location object into a
+// MerchantLocation. Returns nil when Plaid provided no location data at all,
+// so merchants without location stay NULL rather than storing an empty object.
+func extractMerchantLocation(tx plaid.Transaction) *domain.MerchantLocation {
+	loc := tx.GetLocation()
+	mloc := &domain.MerchantLocation{}
+	any := false
+
+	if v, ok := loc.GetAddressOk(); ok && v != nil && *v != "" {
+		mloc.Address = v
+		any = true
+	}
+	if v, ok := loc.GetCityOk(); ok && v != nil && *v != "" {
+		mloc.City = v
+		any = true
+	}
+	if v, ok := loc.GetRegionOk(); ok && v != nil && *v != "" {
+		mloc.Region = v
+		any = true
+	}
+	if v, ok := loc.GetPostalCodeOk(); ok && v != nil && *v != "" {
+		mloc.PostalCode = v
+		any = true
+	}
+	if v, ok := loc.GetCountryOk(); ok && v != nil && *v != "" {
+		mloc.Country = v
+		any = true
+	}
+	if v, ok := loc.GetLatOk(); ok && v != nil {
+		mloc.Lat = v
+		any = true
+	}
+	if v, ok := loc.GetLonOk(); ok && v != nil {
+		mloc.Lon = v
+		any = true
+	}
+	if v, ok := loc.GetStoreNumberOk(); ok && v != nil && *v != "" {
+		mloc.StoreNumber = v
+		any = true
+	}
+
+	if !any {
+		return nil
+	}
+	return mloc
 }
 
 func (s *PlaidService) CreateLinkToken(ctx context.Context, userID uuid.UUID) (interface{}, error) {
