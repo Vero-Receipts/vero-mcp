@@ -877,7 +877,7 @@ func TestTransactionCacheRepo_UpsertBatchAndFind(t *testing.T) {
 	}
 
 	merchantRepo := NewMerchantRepo(db, DialectSQLite)
-	m, err := merchantRepo.Upsert(ctx, "Coffee Shop", nil, nil, nil)
+	m, err := merchantRepo.Upsert(ctx, "Coffee Shop", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("upsert merchant: %v", err)
 	}
@@ -1472,7 +1472,7 @@ func TestTransactionCacheRepo_SearchUnmatched(t *testing.T) {
 	}
 
 	mRepo := NewMerchantRepo(db, DialectSQLite)
-	sbx, err := mRepo.Upsert(ctx, "Starbucks", nil, nil, nil)
+	sbx, err := mRepo.Upsert(ctx, "Starbucks", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("upsert merchant: %v", err)
 	}
