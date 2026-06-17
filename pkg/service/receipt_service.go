@@ -447,7 +447,10 @@ func (s *ReceiptService) List(ctx context.Context, userID uuid.UUID, filter doma
 	return s.receiptRepo.FindByUserID(ctx, userID, filter)
 }
 
-func (s *ReceiptService) ListWithMatches(ctx context.Context, userID uuid.UUID, filter domain.ReceiptFilter) ([]domain.ReceiptWithMatch, error) {
+// ListWithMatches returns a page of receipts with their match (if any) and the
+// total number of matching receipts (for pagination). When filter.Limit is 0
+// the full list is returned and total == len(receipts).
+func (s *ReceiptService) ListWithMatches(ctx context.Context, userID uuid.UUID, filter domain.ReceiptFilter) ([]domain.ReceiptWithMatch, int, error) {
 	return s.receiptRepo.FindByUserIDWithMatches(ctx, userID, filter)
 }
 

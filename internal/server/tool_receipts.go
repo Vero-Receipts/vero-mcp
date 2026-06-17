@@ -37,7 +37,7 @@ func (h *ToolHandlers) GetReceiptsHandler(ctx context.Context, req mcp.CallToolR
 		}
 	}
 
-	receipts, err := h.ReceiptSvc.ListWithMatches(ctx, h.UserID, filter)
+	receipts, _, err := h.ReceiptSvc.ListWithMatches(ctx, h.UserID, filter)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get receipts: %v", err)), nil
 	}

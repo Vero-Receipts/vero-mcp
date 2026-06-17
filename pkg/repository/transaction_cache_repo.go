@@ -161,7 +161,53 @@ func (r *TransactionCacheRepo) FindByUserID(ctx context.Context, userID uuid.UUI
 	return r.scanTransactions(rows)
 }
 
-func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, userID uuid.UUID, filter domain.TransactionFilter) ([]domain.TransactionWithReceipt, error) {
+// FindByUserIDWithReceipts returns a user's transactions enriched with any
+// matched receipt, plus the total number of matching transactions and the
+// total expense amount (sum of positive amounts) across the whole filtered
+// set — both pagination-independent. When filter.Limit > 0 the result is a
+// single page: because a transaction can have multiple receipt_matches rows
+// (transaction_id is not unique), LIMIT/OFFSET is applied to the distinct,
+// ordered set of transaction IDs first, then the receipt details are hydrated
+// for just that page.
+func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, userID uuid.UUID, filter domain.TransactionFilter) ([]domain.TransactionWithReceipt, int, float64, error) {
+	matched := strings.EqualFold(filter.Matched, "true") || strings.EqualFold(filter.Matched, "matched")
+	unmatched := strings.EqualFold(filter.Matched, "false") || strings.EqualFold(filter.Matched, "unmatched")
+
+	// applyBase applies the user scope + filters to a query over the
+	// transaction grain (no receipt join), so counts and the page-id lookup
+	// are not inflated by transactions with multiple matches. The matched /
+	// unmatched filter is expressed via EXISTS for the same reason.
+	applyBase := func(qb sq.SelectBuilder) sq.SelectBuilder {
+		qb = qb.Where(sq.Eq{"t.user_id": userID.String()})
+		qb = applyTransactionFiltersSQ(qb, filter)
+		if matched {
+			qb = qb.Where("EXISTS (SELECT 1 FROM receipt_matches rm WHERE rm.transaction_id = t.transaction_id)")
+		} else if unmatched {
+			qb = qb.Where("NOT EXISTS (SELECT 1 FROM receipt_matches rm WHERE rm.transaction_id = t.transaction_id)")
+		}
+		return qb
+	}
+
+	paginate := filter.Limit > 0
+
+	// totalSpent sums only positive (expense) amounts, matching the client's
+	// "Total spent" line, across every matching transaction (ignoring the page).
+	const spentExpr = "COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0)"
+
+	var total int
+	var totalSpent float64
+	if paginate {
+		countQB := applyBase(r.SQ.Select("COUNT(*)", spentExpr).
+			From("transaction_cache t").
+			LeftJoin("merchants m ON m.id = t.merchant_id"))
+		if err := countQB.QueryRowContext(ctx).Scan(&total, &totalSpent); err != nil {
+			return nil, 0, 0, err
+		}
+		if total == 0 {
+			return []domain.TransactionWithReceipt{}, 0, 0, nil
+		}
+	}
+
 	receiptJoinCols := []string{
 		"r.id", "r.image_url", "r.thumbnail_url", "r.merchant_name",
 		"r.total", "r.subtotal", "r.tax", "r.tip",
@@ -179,17 +225,52 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 
 	qb = applyTransactionFiltersSQ(qb, filter)
 
-	if strings.EqualFold(filter.Matched, "true") || strings.EqualFold(filter.Matched, "matched") {
+	if matched {
 		qb = qb.Where("rm.id IS NOT NULL")
-	} else if strings.EqualFold(filter.Matched, "false") || strings.EqualFold(filter.Matched, "unmatched") {
+	} else if unmatched {
 		qb = qb.Where("rm.id IS NULL")
+	}
+
+	if paginate {
+		// Resolve the ordered page of transaction IDs at the transaction
+		// grain, then restrict the hydrate query to those IDs. Both queries
+		// use the same ORDER BY (with its unique tie-breaker) so the page is
+		// stable and the final ordering is preserved.
+		idQB := applyBase(r.SQ.Select("t.transaction_id").
+			From("transaction_cache t").
+			LeftJoin("merchants m ON m.id = t.merchant_id")).
+			OrderBy(transactionOrderBySQ(filter)).
+			Limit(uint64(filter.Limit)).
+			Offset(uint64(filter.Offset))
+
+		idRows, err := idQB.QueryContext(ctx)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		var ids []string
+		for idRows.Next() {
+			var id string
+			if err := idRows.Scan(&id); err != nil {
+				idRows.Close()
+				return nil, 0, 0, err
+			}
+			ids = append(ids, id)
+		}
+		idRows.Close()
+		if err := idRows.Err(); err != nil {
+			return nil, 0, 0, err
+		}
+		if len(ids) == 0 {
+			return []domain.TransactionWithReceipt{}, total, totalSpent, nil
+		}
+		qb = qb.Where(sq.Eq{"t.transaction_id": ids})
 	}
 
 	qb = qb.OrderBy(transactionOrderBySQ(filter))
 
 	rows, err := qb.QueryContext(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	defer rows.Close()
 
@@ -226,7 +307,7 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 			&rmMethod, &rmConfidence,
 		)
 		if err != nil {
-			return nil, err
+			return nil, 0, 0, err
 		}
 
 		twr.ID = ScanUUID(idStr)
@@ -294,7 +375,21 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 
 		results = append(results, twr)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, 0, err
+	}
+	if !paginate {
+		// Unpaginated: results is the full matching set, so derive both
+		// aggregates from it (no extra query needed).
+		total = len(results)
+		totalSpent = 0
+		for i := range results {
+			if results[i].Amount > 0 {
+				totalSpent += results[i].Amount
+			}
+		}
+	}
+	return results, total, totalSpent, nil
 }
 
 func (r *TransactionCacheRepo) FindUnmatchedCandidates(ctx context.Context, userID uuid.UUID, amount float64, dateStr string) ([]domain.Transaction, error) {
@@ -567,5 +662,7 @@ func transactionOrderBySQ(f domain.TransactionFilter) string {
 		dir = "ASC"
 	}
 
-	return fmt.Sprintf("%s %s", col, dir)
+	// t.transaction_id is a stable, unique tie-breaker so consecutive offset
+	// pages never overlap or skip rows when the primary sort key has ties.
+	return fmt.Sprintf("%s %s, t.transaction_id", col, dir)
 }

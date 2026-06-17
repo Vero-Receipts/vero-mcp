@@ -54,8 +54,8 @@ func (s *stubTxCacheRepo) UpsertBatch(_ context.Context, _ uuid.UUID, _ []domain
 func (s *stubTxCacheRepo) FindByUserID(_ context.Context, _ uuid.UUID) ([]domain.Transaction, error) {
 	return nil, nil
 }
-func (s *stubTxCacheRepo) FindByUserIDWithReceipts(_ context.Context, _ uuid.UUID, _ domain.TransactionFilter) ([]domain.TransactionWithReceipt, error) {
-	return nil, nil
+func (s *stubTxCacheRepo) FindByUserIDWithReceipts(_ context.Context, _ uuid.UUID, _ domain.TransactionFilter) ([]domain.TransactionWithReceipt, int, float64, error) {
+	return nil, 0, 0, nil
 }
 func (s *stubTxCacheRepo) FindUnmatchedCandidates(_ context.Context, _ uuid.UUID, _ float64, _ string) ([]domain.Transaction, error) {
 	return nil, nil

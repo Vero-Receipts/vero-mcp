@@ -72,6 +72,8 @@ type TransactionFilter struct {
 	Pending    string   // "true", "false", or "" for all
 	SortBy     string   // "date", "amount", "merchant", "name" (default: "date")
 	SortOrder  string   // "asc" or "desc" (default: "desc")
+	Limit      int      // page size; when > 0 the query is paginated
+	Offset     int      // page offset; ignored unless Limit > 0
 }
 
 // TransactionResponse is what the API returns to clients (camelCase).

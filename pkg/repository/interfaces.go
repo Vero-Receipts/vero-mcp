@@ -27,7 +27,7 @@ type ReceiptRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*domain.Receipt, error)
 	FindByIDWithMatch(ctx context.Context, id uuid.UUID) (*domain.ReceiptWithMatch, error)
 	FindByUserID(ctx context.Context, userID uuid.UUID, filter domain.ReceiptFilter) ([]domain.Receipt, error)
-	FindByUserIDWithMatches(ctx context.Context, userID uuid.UUID, filter domain.ReceiptFilter) ([]domain.ReceiptWithMatch, error)
+	FindByUserIDWithMatches(ctx context.Context, userID uuid.UUID, filter domain.ReceiptFilter) ([]domain.ReceiptWithMatch, int, error)
 	FindUnmatchedValid(ctx context.Context, userID uuid.UUID) ([]domain.Receipt, error)
 	Update(ctx context.Context, receipt *domain.Receipt) error
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string) error
@@ -50,7 +50,7 @@ type ReceiptMatchRepository interface {
 type TransactionCacheRepository interface {
 	UpsertBatch(ctx context.Context, userID uuid.UUID, txs []domain.Transaction) (int, error)
 	FindByUserID(ctx context.Context, userID uuid.UUID) ([]domain.Transaction, error)
-	FindByUserIDWithReceipts(ctx context.Context, userID uuid.UUID, filter domain.TransactionFilter) ([]domain.TransactionWithReceipt, error)
+	FindByUserIDWithReceipts(ctx context.Context, userID uuid.UUID, filter domain.TransactionFilter) ([]domain.TransactionWithReceipt, int, float64, error)
 	FindUnmatchedCandidates(ctx context.Context, userID uuid.UUID, amount float64, dateStr string) ([]domain.Transaction, error)
 	FindAllUnmatched(ctx context.Context, userID uuid.UUID) ([]domain.Transaction, error)
 	FindUnmatchedByDateRange(ctx context.Context, userID uuid.UUID, dateStr string) ([]domain.Transaction, error)
