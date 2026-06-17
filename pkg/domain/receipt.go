@@ -83,4 +83,6 @@ type ReceiptFilter struct {
 	AmountMin         *float64 // minimum amount filter
 	AmountMax         *float64 // maximum amount filter
 	IncludeDuplicates bool     // when false (default), hides rows with duplicate_of set
+	Limit             int      // page size; when > 0 the query is paginated
+	Offset            int      // page offset; ignored unless Limit > 0
 }

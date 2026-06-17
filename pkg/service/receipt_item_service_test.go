@@ -108,8 +108,8 @@ func (r *fakeReceiptRepo) FindByIDWithMatch(context.Context, uuid.UUID) (*domain
 func (r *fakeReceiptRepo) FindByUserID(context.Context, uuid.UUID, domain.ReceiptFilter) ([]domain.Receipt, error) {
 	return nil, nil
 }
-func (r *fakeReceiptRepo) FindByUserIDWithMatches(context.Context, uuid.UUID, domain.ReceiptFilter) ([]domain.ReceiptWithMatch, error) {
-	return nil, nil
+func (r *fakeReceiptRepo) FindByUserIDWithMatches(context.Context, uuid.UUID, domain.ReceiptFilter) ([]domain.ReceiptWithMatch, int, error) {
+	return nil, 0, nil
 }
 func (r *fakeReceiptRepo) FindUnmatchedValid(context.Context, uuid.UUID) ([]domain.Receipt, error) {
 	return nil, nil

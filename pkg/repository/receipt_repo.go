@@ -183,27 +183,53 @@ func (r *ReceiptRepo) FindByUserID(ctx context.Context, userID uuid.UUID, filter
 	return receipts, rows.Err()
 }
 
-func (r *ReceiptRepo) FindByUserIDWithMatches(ctx context.Context, userID uuid.UUID, filter domain.ReceiptFilter) ([]domain.ReceiptWithMatch, error) {
+// FindByUserIDWithMatches returns a user's receipts with their match (if any),
+// plus the total number of matching receipts (for pagination). receipt_matches.
+// receipt_id is unique, so the join never multiplies rows and LIMIT/OFFSET can
+// be applied directly when filter.Limit > 0.
+func (r *ReceiptRepo) FindByUserIDWithMatches(ctx context.Context, userID uuid.UUID, filter domain.ReceiptFilter) ([]domain.ReceiptWithMatch, int, error) {
+	// applyWhere applies the user scope + filters shared by the count and page
+	// queries.
+	applyWhere := func(qb sq.SelectBuilder) sq.SelectBuilder {
+		qb = qb.Where(sq.Eq{"r.user_id": userID.String()})
+		if !filter.IncludeDuplicates {
+			qb = qb.Where("r.duplicate_of IS NULL")
+		}
+		qb = applyReceiptFiltersSQ(qb, filter, "r.")
+		if filter.MatchMethod != "" {
+			qb = qb.Where(sq.Eq{"rm.match_method": filter.MatchMethod})
+		}
+		return qb
+	}
+
+	paginate := filter.Limit > 0
+
+	var total int
+	if paginate {
+		countQB := applyWhere(r.SQ.Select("COUNT(*)").
+			From("receipts r").
+			LeftJoin("receipt_matches rm ON rm.receipt_id = r.id"))
+		if err := countQB.QueryRowContext(ctx).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		if total == 0 {
+			return []domain.ReceiptWithMatch{}, 0, nil
+		}
+	}
+
 	cols := append(prefixCols("r.", receiptCols), receiptMatchCols...)
-
-	qb := r.SQ.Select(cols...).
+	qb := applyWhere(r.SQ.Select(cols...).
 		From("receipts r").
-		LeftJoin("receipt_matches rm ON rm.receipt_id = r.id").
-		Where(sq.Eq{"r.user_id": userID.String()})
+		LeftJoin("receipt_matches rm ON rm.receipt_id = r.id")).
+		OrderBy(receiptOrderBySQ(filter, "r."))
 
-	if !filter.IncludeDuplicates {
-		qb = qb.Where("r.duplicate_of IS NULL")
+	if paginate {
+		qb = qb.Limit(uint64(filter.Limit)).Offset(uint64(filter.Offset))
 	}
-
-	qb = applyReceiptFiltersSQ(qb, filter, "r.")
-	if filter.MatchMethod != "" {
-		qb = qb.Where(sq.Eq{"rm.match_method": filter.MatchMethod})
-	}
-	qb = qb.OrderBy(receiptOrderBySQ(filter, "r."))
 
 	rows, err := qb.QueryContext(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -211,11 +237,17 @@ func (r *ReceiptRepo) FindByUserIDWithMatches(ctx context.Context, userID uuid.U
 	for rows.Next() {
 		rwm, err := r.scanReceiptWithMatch(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		results = append(results, *rwm)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if !paginate {
+		total = len(results)
+	}
+	return results, total, nil
 }
 
 func (r *ReceiptRepo) FindUnmatchedValid(ctx context.Context, userID uuid.UUID) ([]domain.Receipt, error) {
@@ -641,5 +673,7 @@ func receiptOrderBySQ(f domain.ReceiptFilter, prefix string) string {
 		dir = "ASC"
 	}
 
-	return fmt.Sprintf("%s %s", col, dir)
+	// The id column is a stable, unique tie-breaker so consecutive offset pages
+	// never overlap or skip rows when the primary sort key has ties.
+	return fmt.Sprintf("%s %s, %sid", col, dir, prefix)
 }

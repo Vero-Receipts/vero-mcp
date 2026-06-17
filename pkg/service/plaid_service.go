@@ -389,6 +389,14 @@ type SyncResult struct {
 	Transactions []domain.TransactionResponse `json:"transactions"`
 	HasMore      bool                         `json:"hasMore"`
 	Cursor       string                       `json:"cursor"`
+	// Pagination metadata, set by ListTransactions when a page is requested.
+	// Total is the number of transactions matching the filter across all pages.
+	Total  int `json:"total"`
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+	// TotalSpent is the sum of expense (positive) amounts across every
+	// transaction matching the filter — independent of the current page.
+	TotalSpent float64 `json:"total_spent"`
 }
 
 func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, cursor string) (*SyncResult, error) {
@@ -698,7 +706,7 @@ func (s *PlaidService) RefreshTransactions(ctx context.Context, userID uuid.UUID
 // ListTransactions reads from the local transaction cache (no Plaid API call)
 // and enriches each transaction with its matched receipt payload.
 func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, filter domain.TransactionFilter) (*SyncResult, error) {
-	rows, err := s.txCacheRepo.FindByUserIDWithReceipts(ctx, userID, filter)
+	rows, total, totalSpent, err := s.txCacheRepo.FindByUserIDWithReceipts(ctx, userID, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -735,7 +743,13 @@ func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, f
 		txs = append(txs, resp)
 	}
 
-	return &SyncResult{Transactions: txs}, nil
+	result := &SyncResult{Transactions: txs, Total: total, TotalSpent: totalSpent}
+	if filter.Limit > 0 {
+		result.Limit = filter.Limit
+		result.Offset = filter.Offset
+		result.HasMore = filter.Offset+len(txs) < total
+	}
+	return result, nil
 }
 
 // rematchUnmatchedReceipts runs LLM-based matching for all unmatched receipts
