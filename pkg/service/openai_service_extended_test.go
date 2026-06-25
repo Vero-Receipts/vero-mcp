@@ -464,6 +464,103 @@ func TestParseReceiptCompletion_UnitPriceRecovered(t *testing.T) {
 	}
 }
 
+func TestParseReceiptCompletion_ConsolidatesDuplicateItems(t *testing.T) {
+	data := openAIReceiptData{
+		MerchantName: "Whole Foods",
+		Currency:     "USD",
+		LineItems: []openAILineItem{
+			{Description: "COLD PRESSED ORGANIC GRE", Quantity: 1, UnitPrice: 5.99, TotalPrice: 5.99},
+			{Description: "SOUP CALABRIAN CHILI TOM", Quantity: 1, UnitPrice: 4.99, TotalPrice: 4.99},
+			{Description: "COLD PRESSED ORGANIC GRE", Quantity: 1, UnitPrice: 5.99, TotalPrice: 5.99},
+		},
+	}
+
+	result := ParseReceiptCompletion(makeCompletionResponse(t, data))
+
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if len(result.LineItems) != 2 {
+		t.Fatalf("LineItems count = %d, want 2", len(result.LineItems))
+	}
+	// First occurrence keeps its position; the duplicate is folded in.
+	got := result.LineItems[0]
+	if got.Description != "COLD PRESSED ORGANIC GRE" {
+		t.Errorf("LineItems[0].Description = %q", got.Description)
+	}
+	if got.Quantity != 2 {
+		t.Errorf("LineItems[0].Quantity = %v, want 2", got.Quantity)
+	}
+	if got.Price != 11.98 {
+		t.Errorf("LineItems[0].Price = %.2f, want 11.98", got.Price)
+	}
+	if got.UnitPrice != 5.99 {
+		t.Errorf("LineItems[0].UnitPrice = %.2f, want 5.99", got.UnitPrice)
+	}
+}
+
+func TestConsolidateLineItems(t *testing.T) {
+	t.Run("merges same description and unit price", func(t *testing.T) {
+		in := []domain.LineItem{
+			{Description: "Juice", Quantity: 1, UnitPrice: 5.99, Price: 5.99},
+			{Description: "Juice", Quantity: 1, UnitPrice: 5.99, Price: 5.99},
+			{Description: "Juice", Quantity: 1, UnitPrice: 5.99, Price: 5.99},
+		}
+		out := consolidateLineItems(in)
+		if len(out) != 1 {
+			t.Fatalf("len = %d, want 1", len(out))
+		}
+		if out[0].Quantity != 3 || out[0].Price != 17.97 {
+			t.Errorf("got qty=%v price=%.2f, want qty=3 price=17.97", out[0].Quantity, out[0].Price)
+		}
+	})
+
+	t.Run("matches case-insensitively and ignores surrounding space", func(t *testing.T) {
+		in := []domain.LineItem{
+			{Description: "Bagel", Quantity: 1, UnitPrice: 2.50, Price: 2.50},
+			{Description: " bagel ", Quantity: 1, UnitPrice: 2.50, Price: 2.50},
+		}
+		out := consolidateLineItems(in)
+		if len(out) != 1 || out[0].Quantity != 2 {
+			t.Fatalf("got %d items, qty %v; want 1 item qty 2", len(out), out[0].Quantity)
+		}
+	})
+
+	t.Run("does not merge same description with different unit price", func(t *testing.T) {
+		in := []domain.LineItem{
+			{Description: "Coffee", Quantity: 1, UnitPrice: 3.00, Price: 3.00},
+			{Description: "Coffee", Quantity: 1, UnitPrice: 4.00, Price: 4.00},
+		}
+		out := consolidateLineItems(in)
+		if len(out) != 2 {
+			t.Fatalf("len = %d, want 2", len(out))
+		}
+	})
+
+	t.Run("never merges blank descriptions", func(t *testing.T) {
+		in := []domain.LineItem{
+			{Description: "", Quantity: 1, UnitPrice: 1.00, Price: 1.00},
+			{Description: "", Quantity: 1, UnitPrice: 1.00, Price: 1.00},
+		}
+		out := consolidateLineItems(in)
+		if len(out) != 2 {
+			t.Fatalf("len = %d, want 2", len(out))
+		}
+	})
+
+	t.Run("preserves first-appearance order", func(t *testing.T) {
+		in := []domain.LineItem{
+			{Description: "A", Quantity: 1, UnitPrice: 1.00, Price: 1.00},
+			{Description: "B", Quantity: 1, UnitPrice: 2.00, Price: 2.00},
+			{Description: "A", Quantity: 1, UnitPrice: 1.00, Price: 1.00},
+		}
+		out := consolidateLineItems(in)
+		if len(out) != 2 || out[0].Description != "A" || out[1].Description != "B" {
+			t.Fatalf("unexpected order: %+v", out)
+		}
+	})
+}
+
 func TestParseReceiptCompletion_EmptyCurrencyNotDefaulted(t *testing.T) {
 	// The OCRResult.Currency field returns what the model returned (empty),
 	// not the "USD" default used only for raw text formatting.

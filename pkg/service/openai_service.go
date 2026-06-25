@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -326,6 +327,7 @@ func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 			Price:       item.TotalPrice,
 		})
 	}
+	lineItems = consolidateLineItems(lineItems)
 
 	cur := data.Currency
 	if cur == "" {
@@ -364,6 +366,42 @@ func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 		PaymentMethod:   data.PaymentMethod,
 		LastFourDigits:  data.LastFourDigits,
 	}
+}
+
+// consolidateLineItems merges line items that share the same description and
+// unit price into a single entry, summing their quantities and total prices.
+// Receipts frequently list the same product on multiple lines (e.g. two
+// identical juices rung up separately); collapsing them into one row with an
+// updated quantity yields a cleaner item list. Items with a blank description
+// are never merged, and original order is preserved by first appearance.
+func consolidateLineItems(items []domain.LineItem) []domain.LineItem {
+	if len(items) < 2 {
+		return items
+	}
+	type key struct {
+		desc  string
+		cents int64
+	}
+	index := make(map[key]int, len(items))
+	out := make([]domain.LineItem, 0, len(items))
+	for _, item := range items {
+		desc := strings.ToLower(strings.TrimSpace(item.Description))
+		if desc != "" {
+			k := key{desc: desc, cents: int64(math.Round(item.UnitPrice * 100))}
+			if pos, ok := index[k]; ok {
+				qty := item.Quantity
+				if qty == 0 {
+					qty = 1
+				}
+				out[pos].Quantity += qty
+				out[pos].Price += item.Price
+				continue
+			}
+			index[k] = len(out)
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // ParseTextAsReceipt sends text (e.g. extracted from an email body or PDF)
