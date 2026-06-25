@@ -32,6 +32,8 @@ func mimeFromFilename(name string) string {
 		return "image/webp"
 	case ".heic":
 		return "image/heic"
+	case ".pdf":
+		return "application/pdf"
 	default:
 		return "image/jpeg"
 	}

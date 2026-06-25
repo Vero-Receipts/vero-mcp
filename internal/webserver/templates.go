@@ -172,7 +172,7 @@ const receiptUploadHTML = `<!DOCTYPE html>
         <img id="preview" />
         <div class="spinner" id="spinner"></div>
         <p id="statusText"></p>
-        <input type="file" id="fileInput" accept="image/*" style="display:none" />
+        <input type="file" id="fileInput" accept="image/*,application/pdf" style="display:none" />
     </div>
     <script>
         var dropzone = document.getElementById('dropzone');
@@ -213,6 +213,13 @@ const receiptUploadHTML = `<!DOCTYPE html>
         }
 
         function compressAndUpload(file) {
+            var isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+            if (isPdf) {
+                // PDFs are rasterized/parsed server-side; send as-is.
+                sendFile(file);
+                return;
+            }
+
             var isHeic = file.type === 'image/heic' || file.type === 'image/heif' ||
                          /\.(heic|heif)$/i.test(file.name);
 

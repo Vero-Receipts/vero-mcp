@@ -122,6 +122,7 @@ func mimeTypeFromPath(filePath string) string {
 		".gif":  "image/gif",
 		".webp": "image/webp",
 		".heic": "image/heic",
+		".pdf":  "application/pdf",
 	}
 	ext := filepath.Ext(filePath)
 	if m, ok := mimeTypes[ext]; ok {
