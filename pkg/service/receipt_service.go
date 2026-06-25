@@ -278,7 +278,10 @@ func ClampFutureDate(receipt *domain.Receipt, userID uuid.UUID, fallback *time.T
 }
 
 func (s *ReceiptService) Scan(ctx context.Context, userID uuid.UUID, imageBytes []byte, mimeType, imageURL string, merchantName *string, total *float64) (*ScanResult, error) {
-	ocrResult := s.openAISvc.ParseImageData(ctx, imageBytes, mimeType)
+	// Normalize HEIC/PDF into a vision-friendly render before OCR (OpenAI's
+	// vision API rejects HEIC and PDF). renderBytes/renderMime are the
+	// displayable image used for thumbnailing.
+	renderBytes, renderMime, ocrResult := s.openAISvc.PrepareReceiptForOCR(ctx, imageBytes, mimeType)
 
 	receipt := BuildReceiptFromOCR(ReceiptFromOCRInput{
 		UserID:       userID,
@@ -300,7 +303,7 @@ func (s *ReceiptService) Scan(ctx context.Context, userID uuid.UUID, imageBytes 
 		return nil, fmt.Errorf("create receipt: %w", err)
 	}
 
-	go s.GenerateThumbnailAsync(context.Background(), receipt.ID, imageBytes, mimeType, imageURL, false)
+	go s.GenerateThumbnailAsync(context.Background(), receipt.ID, renderBytes, renderMime, imageURL, false)
 
 	result := &ScanResult{Receipt: receipt}
 	s.TryMatch(ctx, userID, receipt)
@@ -315,6 +318,7 @@ var imageExtensions = map[string]string{
 	".gif":  "image/gif",
 	".webp": "image/webp",
 	".heic": "image/heic",
+	".pdf":  "application/pdf",
 }
 
 // BatchScan reads all image files from dirPath, runs OCR + matching on each,

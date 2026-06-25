@@ -144,7 +144,7 @@ func RegisterTools(s *mcpserver.MCPServer, h *ToolHandlers) {
 
 	s.AddTool(
 		mcp.NewTool("ingest_receipt_image",
-			mcp.WithDescription("Creates a receipt upload session and returns a URL for the user to upload a receipt image in their browser. Before showing the URL, explain to the user that you cannot process image files directly and they need to upload it through the provided link. After showing the URL, immediately call wait_for_receipt_upload with the returned session_id to get the OCR and matching results."),
+			mcp.WithDescription("Creates a receipt upload session and returns a URL for the user to upload a receipt in their browser (image formats jpg, png, gif, webp, heic, or PDF). Before showing the URL, explain to the user that you cannot process files directly and they need to upload it through the provided link. After showing the URL, immediately call wait_for_receipt_upload with the returned session_id to get the OCR and matching results."),
 		),
 		h.IngestReceiptHandler,
 	)
@@ -162,7 +162,7 @@ func RegisterTools(s *mcpserver.MCPServer, h *ToolHandlers) {
 
 	s.AddTool(
 		mcp.NewTool("batch_receipt_ingestion",
-			mcp.WithDescription("Scans a directory for receipt images (jpg, png, gif, webp, heic) and processes each one through OCR and auto-matching. Returns a summary of succeeded and failed receipts."),
+			mcp.WithDescription("Scans a directory for receipt files (jpg, png, gif, webp, heic, pdf) and processes each one through OCR and auto-matching. Returns a summary of succeeded and failed receipts."),
 			mcp.WithString("directory_path",
 				mcp.Required(),
 				mcp.Description("Absolute path to the directory containing receipt images to process"),

@@ -234,8 +234,9 @@ func TestGolden_ParseImage(t *testing.T) {
 				LastFourDigits:  "2676",
 				LineItems: []domain.LineItem{
 					{Description: "KEY WEST SHRIMP WRAP", Quantity: 1, UnitPrice: 23, Price: 23},
-					{Description: "PARC BURGER", Quantity: 1, UnitPrice: 28, Price: 28},
-					{Description: "PARC BURGER", Quantity: 1, UnitPrice: 28, Price: 28},
+					// The two identical PARC BURGER lines are consolidated into one
+					// row with quantity 2 by consolidateLineItems.
+					{Description: "PARC BURGER", Quantity: 2, UnitPrice: 28, Price: 56},
 					{Description: "DIET COKE", Quantity: 1, UnitPrice: 5, Price: 5},
 					{Description: "TRUFFLE FRIES", Quantity: 1, UnitPrice: 15, Price: 15},
 				},
