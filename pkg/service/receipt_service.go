@@ -194,6 +194,12 @@ func BuildReceiptFromOCR(in ReceiptFromOCRInput) *domain.Receipt {
 	if ocr.MerchantAddress != "" {
 		receipt.MerchantAddress = &ocr.MerchantAddress
 	}
+	if ocr.MerchantCity != "" {
+		receipt.MerchantCity = &ocr.MerchantCity
+	}
+	if ocr.MerchantState != "" {
+		receipt.MerchantState = &ocr.MerchantState
+	}
 	if ocr.PaymentMethod != "" {
 		receipt.PaymentMethod = &ocr.PaymentMethod
 	}

@@ -71,9 +71,9 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 
 	rawSQL := `INSERT INTO transaction_cache
 		(id, user_id, transaction_id, account_id, amount, date, datetime, name,
-		 merchant_id, category, pfc_primary, pfc_detailed, payment_channel,
+		 merchant_id, location, raw_payload, category, pfc_primary, pfc_detailed, payment_channel,
 		 pending, synced_at)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	 ON CONFLICT (transaction_id) DO UPDATE SET
 	   account_id      = EXCLUDED.account_id,
 	   amount          = EXCLUDED.amount,
@@ -81,6 +81,8 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 	   datetime        = EXCLUDED.datetime,
 	   name            = EXCLUDED.name,
 	   merchant_id     = COALESCE(EXCLUDED.merchant_id, transaction_cache.merchant_id),
+	   location        = COALESCE(EXCLUDED.location, transaction_cache.location),
+	   raw_payload     = COALESCE(EXCLUDED.raw_payload, transaction_cache.raw_payload),
 	   category        = EXCLUDED.category,
 	   pfc_primary     = EXCLUDED.pfc_primary,
 	   pfc_detailed    = EXCLUDED.pfc_detailed,
@@ -131,10 +133,24 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 			merchantIDStr = &s
 		}
 
+		var locationStr *string
+		if t.Location != nil {
+			if b, err := json.Marshal(t.Location); err == nil {
+				s := string(b)
+				locationStr = &s
+			}
+		}
+
+		var rawPayloadStr *string
+		if len(t.RawPayload) > 0 {
+			s := string(t.RawPayload)
+			rawPayloadStr = &s
+		}
+
 		rowID := uuid.New().String()
 		_, err := stmt.ExecContext(ctx,
 			rowID, uid, t.TransactionID, t.AccountID, t.Amount, t.Date, dtStr, t.Name,
-			merchantIDStr, category, t.PFCPrimary, t.PFCDetailed, t.PaymentChannel,
+			merchantIDStr, locationStr, rawPayloadStr, category, t.PFCPrimary, t.PFCDetailed, t.PaymentChannel,
 			pending, now,
 		)
 		if err != nil {

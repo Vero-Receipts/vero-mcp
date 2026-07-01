@@ -33,7 +33,7 @@ func NewReceiptRepo(db *sql.DB, dialect Dialect) *ReceiptRepo {
 
 var receiptCols = []string{
 	"id", "user_id", "image_url", "image_path", "thumbnail_url",
-	"merchant_name", "merchant_address", "total", "currency", "total_usd",
+	"merchant_name", "merchant_address", "merchant_city", "merchant_state", "total", "currency", "total_usd",
 	"subtotal", "tax", "tip", "payment_method", "last_four_digits",
 	"date", "transaction_time", "raw_text", "ocr_error", "line_items",
 	"source", "status",
@@ -97,6 +97,7 @@ func (r *ReceiptRepo) Create(ctx context.Context, rcpt *domain.Receipt) error {
 		Values(
 			rcpt.ID.String(), rcpt.UserID.String(), rcpt.ImageURL, rcpt.ImagePath,
 			rcpt.ThumbnailURL, rcpt.MerchantName, rcpt.MerchantAddress,
+			rcpt.MerchantCity, rcpt.MerchantState,
 			rcpt.Total, rcpt.Currency, rcpt.TotalUSD,
 			rcpt.Subtotal, rcpt.Tax, rcpt.Tip,
 			rcpt.PaymentMethod, rcpt.LastFourDigits,
@@ -301,6 +302,8 @@ func (r *ReceiptRepo) Update(ctx context.Context, rcpt *domain.Receipt) error {
 		Set("thumbnail_url", rcpt.ThumbnailURL).
 		Set("merchant_name", rcpt.MerchantName).
 		Set("merchant_address", rcpt.MerchantAddress).
+		Set("merchant_city", rcpt.MerchantCity).
+		Set("merchant_state", rcpt.MerchantState).
 		Set("total", rcpt.Total).
 		Set("currency", rcpt.Currency).
 		Set("total_usd", rcpt.TotalUSD).
@@ -523,7 +526,7 @@ func (r *ReceiptRepo) scanReceipt(s scanner) (*domain.Receipt, error) {
 
 	err := s.Scan(
 		&idStr, &userIDStr, &rcpt.ImageURL, &rcpt.ImagePath, &rcpt.ThumbnailURL,
-		&rcpt.MerchantName, &rcpt.MerchantAddress, &rcpt.Total, &rcpt.Currency, &rcpt.TotalUSD,
+		&rcpt.MerchantName, &rcpt.MerchantAddress, &rcpt.MerchantCity, &rcpt.MerchantState, &rcpt.Total, &rcpt.Currency, &rcpt.TotalUSD,
 		&rcpt.Subtotal, &rcpt.Tax, &rcpt.Tip, &rcpt.PaymentMethod, &rcpt.LastFourDigits,
 		&dateVal, &rcpt.TransactionTime, &rcpt.RawText, &rcpt.OCRError, &lineItemsStr,
 		&rcpt.Source, &rcpt.Status,
@@ -572,7 +575,7 @@ func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch,
 
 	err := s.Scan(
 		&idStr, &userIDStr, &rwm.ImageURL, &rwm.ImagePath, &rwm.ThumbnailURL,
-		&rwm.MerchantName, &rwm.MerchantAddress, &rwm.Total, &rwm.Currency, &rwm.TotalUSD,
+		&rwm.MerchantName, &rwm.MerchantAddress, &rwm.MerchantCity, &rwm.MerchantState, &rwm.Total, &rwm.Currency, &rwm.TotalUSD,
 		&rwm.Subtotal, &rwm.Tax, &rwm.Tip, &rwm.PaymentMethod, &rwm.LastFourDigits,
 		&dateVal, &rwm.TransactionTime, &rwm.RawText, &rwm.OCRError, &lineItemsStr,
 		&rwm.Source, &rwm.Status,

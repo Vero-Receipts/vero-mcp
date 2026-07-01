@@ -76,7 +76,7 @@ type MerchantRepository interface {
 	// it's the authoritative identity — matches across merchant-name
 	// variations that would otherwise fork into separate rows. When absent,
 	// we fall back to matching by normalized canonical name.
-	Upsert(ctx context.Context, canonicalName string, websiteDomain, logoURL, plaidEntityID *string, location *domain.MerchantLocation) (*domain.Merchant, error)
+	Upsert(ctx context.Context, canonicalName string, websiteDomain, logoURL, plaidEntityID *string) (*domain.Merchant, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*domain.Merchant, error)
 	FindByNormalizedKey(ctx context.Context, key string) (*domain.Merchant, error)
 	UpdateLogoURL(ctx context.Context, merchantID uuid.UUID, cdnURL string) error

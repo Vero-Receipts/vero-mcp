@@ -3,9 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,6 +29,36 @@ func NormalizeMerchantKey(name string) string {
 	return strings.Join(strings.Fields(strings.ToLower(name)), " ")
 }
 
+var (
+	storeNumberRe   = regexp.MustCompile(`#\s*\d+`)
+	nonAlnumRe      = regexp.MustCompile(`[^a-z0-9]+`)
+	businessSuffixe = map[string]struct{}{
+		"llc": {}, "inc": {}, "ltd": {}, "corp": {}, "incorporated": {},
+	}
+)
+
+// NormalizeBusinessName is a matching-only normalization used to link
+// merchant_catalog rows (CRM/DBA names) to merchants brands. It is intentionally
+// MORE aggressive than NormalizeMerchantKey — which is the live merchants key and
+// must NOT change — additionally stripping store numbers (#123), business suffixes
+// (LLC/INC/LTD/CORP), and punctuation. It is never a stored merchants key; only a
+// comparison form for Stage 1 candidate matching. See
+// merchant-catalog-mapping-design.md §5.
+func NormalizeBusinessName(name string) string {
+	s := strings.ToLower(name)
+	s = storeNumberRe.ReplaceAllString(s, " ")
+	s = nonAlnumRe.ReplaceAllString(s, " ")
+	fields := strings.Fields(s)
+	out := fields[:0]
+	for _, f := range fields {
+		if _, drop := businessSuffixe[f]; drop {
+			continue
+		}
+		out = append(out, f)
+	}
+	return strings.Join(out, " ")
+}
+
 // Upsert resolves-or-creates a merchant. When plaidEntityID is present it's
 // the authoritative key (Plaid's stable cross-transaction merchant id). When
 // absent, we fall back to upsert-by-normalized-name.
@@ -41,7 +71,7 @@ func NormalizeMerchantKey(name string) string {
 // regional franchises Plaid tags as distinct entities), the second one
 // lands with a disambiguated key (`<name>__<entity_id>`) so both rows
 // coexist.
-func (r *MerchantRepo) Upsert(ctx context.Context, canonicalName string, websiteDomain, logoURL, plaidEntityID *string, location *domain.MerchantLocation) (*domain.Merchant, error) {
+func (r *MerchantRepo) Upsert(ctx context.Context, canonicalName string, websiteDomain, logoURL, plaidEntityID *string) (*domain.Merchant, error) {
 	key := NormalizeMerchantKey(canonicalName)
 	if key == "" {
 		return nil, errors.New("merchant upsert: empty canonical name")
@@ -62,7 +92,7 @@ func (r *MerchantRepo) Upsert(ctx context.Context, canonicalName string, website
 		}
 	}
 
-	m, err := r.doUpsert(ctx, canonicalName, key, websiteDomain, logoURL, plaidEntityID, location)
+	m, err := r.doUpsert(ctx, canonicalName, key, websiteDomain, logoURL, plaidEntityID)
 	if err == nil {
 		return m, nil
 	}
@@ -73,29 +103,14 @@ func (r *MerchantRepo) Upsert(ctx context.Context, canonicalName string, website
 		disambiguated := key + "__" + *plaidEntityID
 		// Log so the collision shows up in monitoring — these are rare and
 		// usually worth a human look.
-		return r.doUpsert(ctx, canonicalName, disambiguated, websiteDomain, logoURL, plaidEntityID, location)
+		return r.doUpsert(ctx, canonicalName, disambiguated, websiteDomain, logoURL, plaidEntityID)
 	}
 
 	return nil, err
 }
 
-// marshalLocation serializes a merchant location to a JSON string for the
-// jsonb `location` column. A nil location (or one that fails to marshal)
-// becomes a SQL NULL.
-func marshalLocation(location *domain.MerchantLocation) *string {
-	if location == nil {
-		return nil
-	}
-	b, err := json.Marshal(location)
-	if err != nil {
-		return nil
-	}
-	s := string(b)
-	return &s
-}
-
 // doUpsert runs the actual INSERT ... ON CONFLICT with the given normalized_key.
-func (r *MerchantRepo) doUpsert(ctx context.Context, canonicalName, key string, websiteDomain, logoURL, plaidEntityID *string, location *domain.MerchantLocation) (*domain.Merchant, error) {
+func (r *MerchantRepo) doUpsert(ctx context.Context, canonicalName, key string, websiteDomain, logoURL, plaidEntityID *string) (*domain.Merchant, error) {
 	// Conflict target depends on whether we can key by entity_id.
 	conflictTarget := "normalized_key"
 	if plaidEntityID != nil && *plaidEntityID != "" {
@@ -103,15 +118,14 @@ func (r *MerchantRepo) doUpsert(ctx context.Context, canonicalName, key string, 
 	}
 
 	row := r.SQ.Insert("merchants").
-		Columns("id", "canonical_name", "normalized_key", "plaid_entity_id", "domain", "logo_cdn_url", "location").
-		Values(uuid.New().String(), canonicalName, key, plaidEntityID, websiteDomain, logoURL, marshalLocation(location)).
+		Columns("id", "canonical_name", "normalized_key", "plaid_entity_id", "domain", "logo_cdn_url").
+		Values(uuid.New().String(), canonicalName, key, plaidEntityID, websiteDomain, logoURL).
 		Suffix(`ON CONFLICT (`+conflictTarget+`) DO UPDATE SET
 			canonical_name = COALESCE(NULLIF(EXCLUDED.canonical_name, ''), merchants.canonical_name),
 			domain         = COALESCE(merchants.domain, EXCLUDED.domain),
 			logo_cdn_url   = COALESCE(merchants.logo_cdn_url, EXCLUDED.logo_cdn_url),
-			location       = COALESCE(merchants.location, EXCLUDED.location),
 			updated_at     = CURRENT_TIMESTAMP
-		RETURNING id, canonical_name, normalized_key, plaid_entity_id, domain, logo_cdn_url, location, created_at, updated_at`).
+		RETURNING id, canonical_name, normalized_key, plaid_entity_id, domain, logo_cdn_url, created_at, updated_at`).
 		QueryRowContext(ctx)
 	return scanMerchant(row)
 }
@@ -128,7 +142,7 @@ func isNormalizedKeyCollision(err error) bool {
 }
 
 func (r *MerchantRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Merchant, error) {
-	row := r.SQ.Select("id", "canonical_name", "normalized_key", "plaid_entity_id", "domain", "logo_cdn_url", "location", "created_at", "updated_at").
+	row := r.SQ.Select("id", "canonical_name", "normalized_key", "plaid_entity_id", "domain", "logo_cdn_url", "created_at", "updated_at").
 		From("merchants").
 		Where(sq.Eq{"id": id.String()}).
 		QueryRowContext(ctx)
@@ -136,7 +150,7 @@ func (r *MerchantRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Merc
 }
 
 func (r *MerchantRepo) FindByNormalizedKey(ctx context.Context, key string) (*domain.Merchant, error) {
-	row := r.SQ.Select("id", "canonical_name", "normalized_key", "plaid_entity_id", "domain", "logo_cdn_url", "location", "created_at", "updated_at").
+	row := r.SQ.Select("id", "canonical_name", "normalized_key", "plaid_entity_id", "domain", "logo_cdn_url", "created_at", "updated_at").
 		From("merchants").
 		Where(sq.Eq{"normalized_key": key}).
 		QueryRowContext(ctx)
@@ -166,9 +180,8 @@ func (r *MerchantRepo) UpdateDomain(ctx context.Context, merchantID uuid.UUID, d
 func scanMerchant(row scanner) (*domain.Merchant, error) {
 	var m domain.Merchant
 	var idStr string
-	var locationJSON sql.NullString
 	var createdAt, updatedAt ScannableTime
-	err := row.Scan(&idStr, &m.CanonicalName, &m.NormalizedKey, &m.PlaidEntityID, &m.Domain, &m.LogoCDNURL, &locationJSON, &createdAt, &updatedAt)
+	err := row.Scan(&idStr, &m.CanonicalName, &m.NormalizedKey, &m.PlaidEntityID, &m.Domain, &m.LogoCDNURL, &createdAt, &updatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -176,12 +189,6 @@ func scanMerchant(row scanner) (*domain.Merchant, error) {
 		return nil, err
 	}
 	m.ID = ScanUUID(idStr)
-	if locationJSON.Valid && locationJSON.String != "" {
-		var loc domain.MerchantLocation
-		if err := json.Unmarshal([]byte(locationJSON.String), &loc); err == nil {
-			m.Location = &loc
-		}
-	}
 	if createdAt.Val != nil {
 		m.CreatedAt = *createdAt.Val
 	}
