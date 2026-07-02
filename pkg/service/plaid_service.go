@@ -82,9 +82,7 @@ func (s *PlaidService) resolveMerchantID(ctx context.Context, tx plaid.Transacti
 		entityID = e
 	}
 
-	location := extractMerchantLocation(tx)
-
-	m, err := s.merchantRepo.Upsert(ctx, name, website, logo, entityID, location)
+	m, err := s.merchantRepo.Upsert(ctx, name, website, logo, entityID)
 	if err != nil {
 		slog.Error("upsert merchant", "error", err, "merchant", name)
 		return nil
@@ -92,12 +90,13 @@ func (s *PlaidService) resolveMerchantID(ctx context.Context, tx plaid.Transacti
 	return &m.ID
 }
 
-// extractMerchantLocation maps the Plaid transaction's location object into a
-// MerchantLocation. Returns nil when Plaid provided no location data at all,
-// so merchants without location stay NULL rather than storing an empty object.
-func extractMerchantLocation(tx plaid.Transaction) *domain.MerchantLocation {
+// extractTransactionLocation maps the Plaid transaction's location object into a
+// TransactionLocation for the transaction_cache row (per-outlet location, the
+// discriminator for user↔catalog matching). Returns nil when Plaid provided no
+// location data at all (e.g. online transactions), so those rows stay NULL.
+func extractTransactionLocation(tx plaid.Transaction) *domain.TransactionLocation {
 	loc := tx.GetLocation()
-	mloc := &domain.MerchantLocation{}
+	mloc := &domain.TransactionLocation{}
 	any := false
 
 	if v, ok := loc.GetAddressOk(); ok && v != nil && *v != "" {
@@ -551,6 +550,13 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 					MerchantLogo:   merchantLogo,
 				}
 
+				// Full Plaid payload, stored verbatim for audit / future extraction.
+				rawPayload, err := json.Marshal(tx)
+				if err != nil {
+					slog.Warn("marshal raw transaction payload", "error", err, "tx_id", tx.GetTransactionId())
+					rawPayload = nil
+				}
+
 				cacheTxs = append(cacheTxs, domain.Transaction{
 					TransactionID:  tx.GetTransactionId(),
 					AccountID:      tx.GetAccountId(),
@@ -559,6 +565,8 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 					DateTime:       datetime,
 					Name:           tx.GetName(),
 					MerchantID:     merchantID,
+					Location:       extractTransactionLocation(tx),
+					RawPayload:     rawPayload,
 					Category:       categoryJSON,
 					PFCPrimary:     pfcPrimary,
 					PFCDetailed:    pfcDetailed,

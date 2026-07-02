@@ -15,6 +15,8 @@ type Receipt struct {
 	ThumbnailURL    *string         `json:"thumbnail_url"`
 	MerchantName    *string         `json:"merchant_name,omitempty"`
 	MerchantAddress *string         `json:"merchant_address,omitempty"`
+	MerchantCity    *string         `json:"merchant_city,omitempty"`  // parsed from MerchantAddress; drives receipt-based outlet resolution
+	MerchantState   *string         `json:"merchant_state,omitempty"` // 2-letter, normalized
 	Total           *float64        `json:"total,omitempty"`
 	Currency        *string         `json:"currency,omitempty"`  // ISO 4217 (e.g. "USD", "MXN", "EUR")
 	TotalUSD        *float64        `json:"total_usd,omitempty"` // FX-converted USD amount (nil if already USD)
@@ -51,6 +53,8 @@ type OCRResult struct {
 	LineItems       []LineItem `json:"line_items"`
 	MerchantName    string     `json:"merchant_name,omitempty"`
 	MerchantAddress string     `json:"merchant_address,omitempty"`
+	MerchantCity    string     `json:"merchant_city,omitempty"`  // parsed from MerchantAddress
+	MerchantState   string     `json:"merchant_state,omitempty"` // 2-letter, normalized
 	TransactionDate string     `json:"transaction_date,omitempty"` // YYYY-MM-DD
 	TransactionTime string     `json:"transaction_time,omitempty"` // HH:MM
 	Subtotal        *float64   `json:"subtotal,omitempty"`

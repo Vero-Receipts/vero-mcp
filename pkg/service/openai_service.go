@@ -351,11 +351,15 @@ func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 	tip := data.Tip
 	total := data.Total
 
+	city, state := ParseAddressCityState(data.MerchantAddress)
+
 	return &domain.OCRResult{
 		RawText:         rawBuf.String(),
 		LineItems:       lineItems,
 		MerchantName:    data.MerchantName,
 		MerchantAddress: data.MerchantAddress,
+		MerchantCity:    city,
+		MerchantState:   state,
 		TransactionDate: data.TransactionDate,
 		TransactionTime: data.TransactionTime,
 		Subtotal:        &subtotal,

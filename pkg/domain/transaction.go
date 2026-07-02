@@ -22,6 +22,12 @@ type Transaction struct {
 	Name           string          `json:"name"`
 	MerchantID     *uuid.UUID      `json:"merchant_id,omitempty"`
 	Merchant       *Merchant       `json:"merchant,omitempty"`
+	// Location is where THIS transaction happened (per-outlet), from Plaid's
+	// transaction `location` object. Nil when Plaid gave none (e.g. online).
+	Location *TransactionLocation `json:"location,omitempty"`
+	// RawPayload is the complete Plaid transaction JSON, stored verbatim for audit
+	// and future field extraction. Not read by any current query.
+	RawPayload json.RawMessage `json:"raw_payload,omitempty"`
 	Category       json.RawMessage `json:"category,omitempty"`
 	PFCPrimary     *string         `json:"pfc_primary,omitempty"`
 	PFCDetailed    *string         `json:"pfc_detailed,omitempty"`
@@ -33,6 +39,20 @@ type Transaction struct {
 	CategoryCorrectedAt  *time.Time      `json:"category_corrected_at,omitempty"`
 }
 
+// TransactionLocation mirrors Plaid's transaction `location` object. Persisted as a
+// JSONB column on transaction_cache. It is the per-outlet discriminator for
+// user↔catalog matching (City drives outlet resolution; the rest is kept for future
+// needs). All fields optional; a transaction with no Plaid location has a nil pointer.
+type TransactionLocation struct {
+	Address     *string  `json:"address,omitempty"`
+	City        *string  `json:"city,omitempty"`
+	Region      *string  `json:"region,omitempty"`
+	PostalCode  *string  `json:"postal_code,omitempty"`
+	Country     *string  `json:"country,omitempty"`
+	Lat         *float64 `json:"lat,omitempty"`
+	Lon         *float64 `json:"lon,omitempty"`
+	StoreNumber *string  `json:"store_number,omitempty"`
+}
 
 // TransactionWithReceipt combines a cached transaction with its matched receipt (if any).
 type TransactionWithReceipt struct {
