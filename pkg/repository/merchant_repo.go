@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -27,36 +26,6 @@ func NewMerchantRepo(db *sql.DB, dialect Dialect) *MerchantRepo {
 // "starbucks" collide into one merchant row.
 func NormalizeMerchantKey(name string) string {
 	return strings.Join(strings.Fields(strings.ToLower(name)), " ")
-}
-
-var (
-	storeNumberRe   = regexp.MustCompile(`#\s*\d+`)
-	nonAlnumRe      = regexp.MustCompile(`[^a-z0-9]+`)
-	businessSuffixe = map[string]struct{}{
-		"llc": {}, "inc": {}, "ltd": {}, "corp": {}, "incorporated": {},
-	}
-)
-
-// NormalizeBusinessName is a matching-only normalization used to link
-// merchant_catalog rows (CRM/DBA names) to merchants brands. It is intentionally
-// MORE aggressive than NormalizeMerchantKey — which is the live merchants key and
-// must NOT change — additionally stripping store numbers (#123), business suffixes
-// (LLC/INC/LTD/CORP), and punctuation. It is never a stored merchants key; only a
-// comparison form for Stage 1 candidate matching. See
-// merchant-catalog-mapping-design.md §5.
-func NormalizeBusinessName(name string) string {
-	s := strings.ToLower(name)
-	s = storeNumberRe.ReplaceAllString(s, " ")
-	s = nonAlnumRe.ReplaceAllString(s, " ")
-	fields := strings.Fields(s)
-	out := fields[:0]
-	for _, f := range fields {
-		if _, drop := businessSuffixe[f]; drop {
-			continue
-		}
-		out = append(out, f)
-	}
-	return strings.Join(out, " ")
 }
 
 // Upsert resolves-or-creates a merchant. When plaidEntityID is present it's
