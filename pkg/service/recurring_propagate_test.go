@@ -145,6 +145,51 @@ func TestPropagateRecurring_PatternNoReceipt(t *testing.T) {
 	}
 }
 
+// TestPropagateRecurring_PatternWithNonSubscriptionReceipt is the regression test for the prod
+// finding: three same-price restaurant visits, one with a (non-subscription) receipt. The
+// pattern earns the badge, but the receipt must NOT be carried onto the other visits.
+func TestPropagateRecurring_PatternWithNonSubscriptionReceipt(t *testing.T) {
+	ctx := context.Background()
+	f := newPropagateFixture(t)
+	svc, txRepo, merchantRepo, receiptRepo, matchRepo, userID := f.svc, f.txRepo, f.merchant, f.receipts, f.matches, f.userID
+
+	m, err := merchantRepo.Upsert(ctx, "McDonald's", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("merchant: %v", err)
+	}
+	seedTxn(t, ctx, txRepo, userID, "t1", &m.ID, 12.00, "2026-03-10")
+	seedTxn(t, ctx, txRepo, userID, "t2", &m.ID, 12.00, "2026-04-10")
+	seedTxn(t, ctx, txRepo, userID, "t3", &m.ID, 12.00, "2026-05-10")
+
+	notSub := false
+	r := &domain.Receipt{UserID: userID, MerchantName: strPtr("McDonald's"), Source: "upload", Status: "matched", LineItems: json.RawMessage("[]"), IsSubscription: &notSub}
+	if err := receiptRepo.Create(ctx, r); err != nil {
+		t.Fatalf("receipt: %v", err)
+	}
+	if err := matchRepo.Create(ctx, &domain.ReceiptMatch{ReceiptID: r.ID, TransactionID: "t1", ConfidenceScore: 0.95, MatchMethod: "auto"}); err != nil {
+		t.Fatalf("match: %v", err)
+	}
+
+	svc.PropagateRecurring(ctx, userID)
+
+	// Badge: all three flagged (>= 3 pattern).
+	for _, id := range []string{"t1", "t2", "t3"} {
+		got, err := txRepo.FindByTransactionID(ctx, id)
+		if err != nil {
+			t.Fatalf("find %s: %v", id, err)
+		}
+		if !got.Recurring {
+			t.Errorf("%s.Recurring = false, want true", id)
+		}
+	}
+	// Itemization: the bare visits must NOT inherit the non-subscription receipt.
+	for _, id := range []string{"t2", "t3"} {
+		if _, err := matchRepo.FindByTransactionID(ctx, id); err != domain.ErrNotFound {
+			t.Errorf("%s should have no carried-forward match (source is not a subscription), got err=%v", id, err)
+		}
+	}
+}
+
 // TestPropagateRecurring_NotRecurring: two same-amount charges with no subscription receipt
 // do not establish (needs >= 3 without a subscription flag). Nothing is flagged or itemized.
 func TestPropagateRecurring_NotRecurring(t *testing.T) {

@@ -87,6 +87,45 @@ func TestEvaluateSeries(t *testing.T) {
 		}
 	})
 
+	t.Run("pattern of 3 with a non-subscription source flags but does NOT itemize", func(t *testing.T) {
+		// e.g. three same-price McDonald's visits, one of which has a (non-subscription)
+		// receipt. The pattern earns the badge, but the receipt must not be smeared onto
+		// the other two visits.
+		cluster := []domain.RecurringCandidate{
+			mkCand("t1", 12.00, "2026-03-10", false, true, &rid, &fal), // receipt, is_sub=false
+			mkCand("t2", 12.00, "2026-04-10", false, false, nil, nil),
+			mkCand("t3", 12.00, "2026-05-10", false, false, nil, nil),
+		}
+		flag, itemize := evaluateSeries(cluster)
+		if len(flag) != 3 {
+			t.Fatalf("flag = %v, want all 3 marked recurring", flag)
+		}
+		if len(itemize) != 0 {
+			t.Fatalf("itemize = %v, want none (source is not a subscription)", itemize)
+		}
+	})
+
+	t.Run("pattern of 3 with an unevaluated source needs OCR and does not itemize yet", func(t *testing.T) {
+		cluster := []domain.RecurringCandidate{
+			mkCand("t1", 12.00, "2026-03-10", false, true, &rid, nil), // receipt, is_sub unknown
+			mkCand("t2", 12.00, "2026-04-10", false, false, nil, nil),
+			mkCand("t3", 12.00, "2026-05-10", false, false, nil, nil),
+		}
+		r, ok := analyzeCluster(cluster)
+		if !ok {
+			t.Fatal("expected the series to be reported")
+		}
+		if !r.Established {
+			t.Errorf("Established = false, want true (pattern >= 3)")
+		}
+		if !r.NeedsOCR {
+			t.Errorf("NeedsOCR = false, want true (source subscription flag unknown)")
+		}
+		if len(r.Itemize) != 0 {
+			t.Errorf("Itemize = %v, want none until the source is OCR'd", r.Itemize)
+		}
+	})
+
 	t.Run("irregular cadence is rejected", func(t *testing.T) {
 		cluster := []domain.RecurringCandidate{
 			mkCand("t1", 10.00, "2026-05-01", false, false, nil, nil),
