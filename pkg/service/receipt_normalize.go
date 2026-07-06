@@ -167,8 +167,8 @@ func heicToJPEG(ctx context.Context, data []byte) ([]byte, error) {
 
 // --- poppler (pdftotext / pdftoppm) helpers ---
 // These are the single source of truth for the PDF OCR pipeline: the shared
-// upload entrypoint (preparePDFForOCR) and plaid-wrapper's email-ingestion path
-// both call the exported variants below, so a fix lands in one place. Requires
+// upload entrypoint (preparePDFForOCR) and the email-ingestion path both call
+// the exported variants below, so a fix lands in one place. Requires
 // poppler-utils on the runtime image.
 
 func validateCommandPath(path string) error {

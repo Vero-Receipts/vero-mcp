@@ -1,0 +1,38 @@
+{
+  "request_sha256": "43cb8d35148a40ca243ffd806f992dec2ef48161c372a5ee7f433f6030a2d8e9",
+  "response": {
+    "id": "chatcmpl-DxwxWnrGhk3tBDmZL8qUoU1uW4cbC",
+    "object": "chat.completion",
+    "created": 1783180362,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":true,\"lastFourDigits\":\"6222\",\"lineItems\":[{\"description\":\"Go+\",\"quantity\":1,\"totalPrice\":11.99,\"unitPrice\":11.99}],\"merchantAddress\":\"Karl Marx Str. 101. Berlin, Berlin 12043 Germany\",\"merchantName\":\"SoundCloud Global Limited \u0026 Co. KG\",\"paymentMethod\":\"Visa\",\"subtotal\":11.99,\"tax\":0,\"tip\":0,\"total\":11.99,\"transactionDate\":\"2026-04-24\",\"transactionTime\":\"\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1228,
+      "completion_tokens": 1729,
+      "total_tokens": 2957,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1600,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

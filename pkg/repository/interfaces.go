@@ -59,6 +59,8 @@ type TransactionCacheRepository interface {
 	SearchUnmatched(ctx context.Context, userID uuid.UUID, search string) ([]domain.Transaction, error)
 	FindByTransactionID(ctx context.Context, transactionID string) (*domain.Transaction, error)
 	UpdateCorrectedCategory(ctx context.Context, transactionID string, primary, detailed string) error
+	FindRecurringCandidates(ctx context.Context, userID uuid.UUID) ([]domain.RecurringCandidate, error)
+	SetRecurring(ctx context.Context, transactionIDs []string) error
 }
 
 type MerchantAliasRepository interface {

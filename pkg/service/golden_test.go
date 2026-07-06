@@ -194,6 +194,10 @@ func newGoldenOpenAIService(t *testing.T, goldenName string) *OpenAIService {
 func assertOCRResult(t *testing.T, got *domain.OCRResult, want domain.OCRResult) {
 	t.Helper()
 	got.RawText = ""
+	// IsSubscription is not asserted here: these goldens replay responses captured before the
+	// field existed, so it always decodes to false. Its parsing is covered directly by
+	// TestParseReceiptCompletion_IsSubscription.
+	got.IsSubscription = nil
 	if !reflect.DeepEqual(*got, want) {
 		t.Errorf("OCRResult mismatch:\n  got:  %+v\n  want: %+v", *got, want)
 	}
@@ -543,5 +547,43 @@ func TestGolden_CorrectCategory(t *testing.T) {
 				t.Errorf("primary = %q, want to contain %q (detailed: %s)", result.CorrectedPFCPrimary, tt.wantPrimaryContains, result.CorrectedPFCDetailed)
 			}
 		})
+	}
+}
+
+// TestGolden_IsSubscriptionDetection verifies end-to-end that the OCR pipeline flags a real
+// subscription receipt (the SoundCloud Go+ email, stripped to plain text) as a subscription.
+// Uses the golden replay harness; until the golden is captured it skips, so the suite stays
+// green.
+//
+// Capture once:
+//
+//	UPDATE_GOLDEN=true OPENAI_API_KEY=sk-... go test ./pkg/service -run TestGolden_IsSubscriptionDetection
+func TestGolden_IsSubscriptionDetection(t *testing.T) {
+	const goldenName = "parse_email_soundcloud"
+	if !goldenExists(goldenFilePath(goldenName)) && os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skipf("golden %q not captured yet; run: UPDATE_GOLDEN=true OPENAI_API_KEY=sk-... go test ./pkg/service -run TestGolden_IsSubscriptionDetection", goldenName)
+	}
+
+	body, err := os.ReadFile("testdata/emails/soundcloud.txt")
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	svc := newGoldenOpenAIService(t, goldenName)
+	r := svc.ParseTextAsReceipt(context.Background(), string(body), "SoundCloud subscription receipt", nil)
+	if r.Error != "" {
+		t.Fatalf("parse error: %s", r.Error)
+	}
+
+	// The assertion that matters: this receipt is detected as a subscription.
+	if r.IsSubscription == nil || !*r.IsSubscription {
+		t.Errorf("IsSubscription = %v, want true", r.IsSubscription)
+	}
+	// Sanity checks so the golden can't silently drift onto the wrong receipt.
+	if !strings.Contains(strings.ToLower(r.MerchantName), "soundcloud") {
+		t.Errorf("MerchantName = %q, want to contain SoundCloud", r.MerchantName)
+	}
+	if r.Total == nil || *r.Total != 11.99 {
+		t.Errorf("Total = %v, want 11.99", r.Total)
 	}
 }

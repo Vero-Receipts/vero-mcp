@@ -743,6 +743,7 @@ func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, f
 			PFCDetailed:          row.PFCDetailed,
 			PaymentChannel:       row.PaymentChannel,
 			Pending:              row.Pending,
+			Recurring:            row.Recurring,
 			MerchantLogo:         mLogo,
 			CorrectedPFCPrimary:  row.CorrectedPFCPrimary,
 			CorrectedPFCDetailed: row.CorrectedPFCDetailed,
@@ -761,16 +762,20 @@ func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, f
 }
 
 // rematchUnmatchedReceipts runs LLM-based matching for all unmatched receipts
-// belonging to the user. Called in the background after new transactions land.
+// belonging to the user, then carries recurring-series receipts forward to bare
+// transactions. Called in the background after new transactions land.
 func (s *PlaidService) rematchUnmatchedReceipts(ctx context.Context, userID uuid.UUID) {
 	count, err := s.receiptSvc.SuggestMatches(ctx, userID)
 	if err != nil {
 		slog.Error("rematch: suggest matches", "error", err, "user_id", userID)
-		return
-	}
-	if count > 0 {
+		// Fall through: recurring propagation is independent of receipt suggestion.
+	} else if count > 0 {
 		slog.Info("rematch: matched receipts", "count", count, "user_id", userID)
 	}
+
+	// Detect recurring series and carry their itemization forward. Runs after
+	// SuggestMatches so any receipt that just matched a transaction can seed a series.
+	s.receiptSvc.PropagateRecurring(ctx, userID)
 }
 
 func (s *PlaidService) ForceSyncForWebhook(ctx context.Context, itemID string) ([]domain.TransactionResponse, error) {
