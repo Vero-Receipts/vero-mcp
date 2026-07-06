@@ -61,9 +61,9 @@ type SeriesReport struct {
 	SourceReceipt *uuid.UUID // earliest real (non-derived) receipt in the series, if any
 	SourceIsSub   *bool      // that receipt's is_subscription (nil = not yet evaluated)
 	Established    bool       // qualifies to be marked recurring now, with known data
-	// NeedsOCR is true when the series has a source receipt whose subscription flag has not
-	// been evaluated yet. A re-OCR pass resolves it, which decides whether to itemize (and,
-	// for a 2-occurrence series, whether it establishes at all).
+	// NeedsOCR is true for a not-yet-established (2-occurrence) series whose source receipt's
+	// subscription flag is unknown — OCR decides whether it establishes. A ≥3-occurrence series
+	// is established by pattern alone and never needs OCR.
 	NeedsOCR bool
 	Flag     []string        // transaction ids to mark recurring (when Established)
 	Itemize  []ItemizeTarget // derived matches to create (when Established and a source exists)
@@ -121,9 +121,12 @@ func analyzeCluster(cluster []domain.RecurringCandidate) (SeriesReport, bool) {
 	}
 
 	established := hasSubReceipt || len(cluster) >= recurringMinPatternCount
-	// A source receipt with an unknown subscription flag must be OCR'd before we can decide
-	// whether to itemize — and, for a 2-occurrence series, whether it even establishes.
-	needsOCR := source != nil && srcIsSub == nil
+	// A ≥3-occurrence, same-amount, regular-cadence series is strong enough on its own — real
+	// non-subscription spend (restaurants, rideshare, gas) doesn't produce the identical bill
+	// repeatedly, so the amount band + cadence already filter it out. OCR is therefore only
+	// needed to rescue a 2-occurrence series, where the pattern alone is too weak and a
+	// subscription receipt is what establishes it.
+	needsOCR := !established && source != nil && srcIsSub == nil
 	if !established && !needsOCR {
 		return SeriesReport{}, false
 	}
@@ -145,14 +148,14 @@ func analyzeCluster(cluster []domain.RecurringCandidate) (SeriesReport, bool) {
 				r.Flag = append(r.Flag, m.TransactionID)
 			}
 		}
-	}
-	// Itemize ONLY from a confirmed subscription receipt. A ≥3-occurrence pattern justifies the
-	// recurring badge but must never carry a specific receipt forward onto the other charges —
-	// otherwise one restaurant/rideshare/gas receipt gets smeared across unrelated visits.
-	if hasSubReceipt && source != nil {
-		for _, m := range cluster {
-			if !m.Matched {
-				r.Itemize = append(r.Itemize, ItemizeTarget{TransactionID: m.TransactionID, ReceiptID: *source})
+		// Carry the series' source receipt forward to its bare charges. For an established
+		// series (subscription receipt at ≥2, or ≥3 occurrences on a regular cadence) the
+		// recurring charges are the same thing each period, so the earlier receipt's items apply.
+		if source != nil {
+			for _, m := range cluster {
+				if !m.Matched {
+					r.Itemize = append(r.Itemize, ItemizeTarget{TransactionID: m.TransactionID, ReceiptID: *source})
+				}
 			}
 		}
 	}

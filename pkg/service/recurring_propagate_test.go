@@ -145,24 +145,26 @@ func TestPropagateRecurring_PatternNoReceipt(t *testing.T) {
 	}
 }
 
-// TestPropagateRecurring_PatternWithNonSubscriptionReceipt is the regression test for the prod
-// finding: three same-price restaurant visits, one with a (non-subscription) receipt. The
-// pattern earns the badge, but the receipt must NOT be carried onto the other visits.
-func TestPropagateRecurring_PatternWithNonSubscriptionReceipt(t *testing.T) {
+// TestPropagateRecurring_PatternItemizesFromSource verifies that a ≥3-occurrence series is
+// established by pattern alone and carries its source receipt forward to the bare charges,
+// regardless of the source receipt's subscription flag.
+func TestPropagateRecurring_PatternItemizesFromSource(t *testing.T) {
 	ctx := context.Background()
 	f := newPropagateFixture(t)
 	svc, txRepo, merchantRepo, receiptRepo, matchRepo, userID := f.svc, f.txRepo, f.merchant, f.receipts, f.matches, f.userID
 
-	m, err := merchantRepo.Upsert(ctx, "McDonald's", nil, nil, nil)
+	m, err := merchantRepo.Upsert(ctx, "SoundCloud", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("merchant: %v", err)
 	}
-	seedTxn(t, ctx, txRepo, userID, "t1", &m.ID, 12.00, "2026-03-10")
-	seedTxn(t, ctx, txRepo, userID, "t2", &m.ID, 12.00, "2026-04-10")
-	seedTxn(t, ctx, txRepo, userID, "t3", &m.ID, 12.00, "2026-05-10")
+	seedTxn(t, ctx, txRepo, userID, "t1", &m.ID, 11.99, "2026-03-10")
+	seedTxn(t, ctx, txRepo, userID, "t2", &m.ID, 11.99, "2026-04-10")
+	seedTxn(t, ctx, txRepo, userID, "t3", &m.ID, 11.99, "2026-05-10")
 
+	// Source receipt whose own wording does not self-declare a subscription (is_sub=false),
+	// as with an invoice PDF — the ≥3 pattern should itemize from it anyway.
 	notSub := false
-	r := &domain.Receipt{UserID: userID, MerchantName: strPtr("McDonald's"), Source: "upload", Status: "matched", LineItems: json.RawMessage("[]"), IsSubscription: &notSub}
+	r := &domain.Receipt{UserID: userID, MerchantName: strPtr("SoundCloud"), Source: "email", Status: "matched", LineItems: json.RawMessage("[]"), IsSubscription: &notSub}
 	if err := receiptRepo.Create(ctx, r); err != nil {
 		t.Fatalf("receipt: %v", err)
 	}
@@ -172,7 +174,6 @@ func TestPropagateRecurring_PatternWithNonSubscriptionReceipt(t *testing.T) {
 
 	svc.PropagateRecurring(ctx, userID)
 
-	// Badge: all three flagged (>= 3 pattern).
 	for _, id := range []string{"t1", "t2", "t3"} {
 		got, err := txRepo.FindByTransactionID(ctx, id)
 		if err != nil {
@@ -182,10 +183,14 @@ func TestPropagateRecurring_PatternWithNonSubscriptionReceipt(t *testing.T) {
 			t.Errorf("%s.Recurring = false, want true", id)
 		}
 	}
-	// Itemization: the bare visits must NOT inherit the non-subscription receipt.
+	// The two bare charges inherit the source receipt as carried-forward matches.
 	for _, id := range []string{"t2", "t3"} {
-		if _, err := matchRepo.FindByTransactionID(ctx, id); err != domain.ErrNotFound {
-			t.Errorf("%s should have no carried-forward match (source is not a subscription), got err=%v", id, err)
+		dm, err := matchRepo.FindByTransactionID(ctx, id)
+		if err != nil {
+			t.Fatalf("%s should have a carried-forward match: %v", id, err)
+		}
+		if dm.ReceiptID != r.ID || dm.MatchMethod != "recurring" {
+			t.Errorf("%s match = receipt %v method %q, want %v/recurring", id, dm.ReceiptID, dm.MatchMethod, r.ID)
 		}
 	}
 }
