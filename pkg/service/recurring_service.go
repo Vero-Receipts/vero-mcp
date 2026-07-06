@@ -18,6 +18,11 @@ const (
 	// recurringMinPatternCount is how many occurrences establish recurrence WITHOUT a
 	// subscription receipt to confirm it. With an is_subscription source, 2 is enough.
 	recurringMinPatternCount = 3
+	// recurringDuplicateWindowDays collapses charges within this many days of the previous
+	// occurrence into one — they're duplicates (the same real charge re-imported after an
+	// account re-link, with a fresh transaction_id) or a same-period double charge, not a new
+	// cycle. It's below the smallest cadence bucket (weekly), so no real cadence is affected.
+	recurringDuplicateWindowDays = 5
 )
 
 // frequencyBucket is an allowed cadence expressed as an inclusive day range (nominal ±
@@ -98,7 +103,11 @@ func analyzeCluster(cluster []domain.RecurringCandidate) (SeriesReport, bool) {
 	}
 	sort.Slice(cluster, func(i, j int) bool { return cluster[i].Date < cluster[j].Date })
 
-	cadence, cadenceOK := seriesCadence(cluster)
+	// Cadence and occurrence count are computed over DISTINCT occurrences so duplicate charges
+	// (e.g. the same charge re-imported after an account re-link) don't inject ~0-day gaps that
+	// break the cadence, or inflate the count.
+	occurrences := distinctOccurrences(cluster)
+	cadence, cadenceOK := cadenceOf(occurrences)
 	if !cadenceOK {
 		return SeriesReport{}, false
 	}
@@ -120,7 +129,7 @@ func analyzeCluster(cluster []domain.RecurringCandidate) (SeriesReport, bool) {
 		}
 	}
 
-	established := hasSubReceipt || len(cluster) >= recurringMinPatternCount
+	established := hasSubReceipt || len(occurrences) >= recurringMinPatternCount
 	// A ≥3-occurrence, same-amount, regular-cadence series is strong enough on its own — real
 	// non-subscription spend (restaurants, rideshare, gas) doesn't produce the identical bill
 	// repeatedly, so the amount band + cadence already filter it out. OCR is therefore only
@@ -172,12 +181,29 @@ func evaluateSeries(cluster []domain.RecurringCandidate) ([]string, []ItemizeTar
 	return r.Flag, r.Itemize
 }
 
-// seriesCadence returns the (first) frequency bucket for a date-ascending cluster, and false
-// if any consecutive gap does not snap to a bucket.
-func seriesCadence(cluster []domain.RecurringCandidate) (string, bool) {
+// distinctOccurrences returns the dates of a (date-ascending) cluster's distinct billing
+// occurrences, collapsing any member within recurringDuplicateWindowDays of the previous kept
+// occurrence — duplicates or same-period double charges. All members stay in the cluster for
+// flagging/itemization; this only feeds the cadence and occurrence-count checks.
+func distinctOccurrences(sorted []domain.RecurringCandidate) []string {
+	var occ []string
+	for _, m := range sorted {
+		if len(occ) == 0 || dayGap(occ[len(occ)-1], m.Date) >= recurringDuplicateWindowDays {
+			occ = append(occ, m.Date)
+		}
+	}
+	return occ
+}
+
+// cadenceOf returns the (first) frequency bucket for date-ascending distinct occurrences, and
+// false if there are fewer than two occurrences or any consecutive gap does not snap to a bucket.
+func cadenceOf(occ []string) (string, bool) {
+	if len(occ) < 2 {
+		return "irregular", false
+	}
 	name := ""
-	for i := 1; i < len(cluster); i++ {
-		b, ok := snapToBucket(dayGap(cluster[i-1].Date, cluster[i].Date))
+	for i := 1; i < len(occ); i++ {
+		b, ok := snapToBucket(dayGap(occ[i-1], occ[i]))
 		if !ok {
 			return "irregular", false
 		}
