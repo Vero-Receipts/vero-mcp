@@ -37,6 +37,7 @@ type Receipt struct {
 	OrderID         *string         `json:"order_id,omitempty"`
 	MerchantKey     *string         `json:"merchant_key,omitempty"`
 	DuplicateOf     *uuid.UUID      `json:"duplicate_of,omitempty"`
+	IsSubscription  *bool           `json:"is_subscription,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
@@ -64,6 +65,7 @@ type OCRResult struct {
 	Currency        string     `json:"currency,omitempty"` // ISO 4217 (e.g. "USD", "MXN")
 	PaymentMethod   string     `json:"payment_method,omitempty"`
 	LastFourDigits  string     `json:"last_four_digits,omitempty"`
+	IsSubscription  *bool      `json:"is_subscription,omitempty"`
 	Error           string     `json:"error,omitempty"`
 }
 

@@ -33,6 +33,10 @@ type Transaction struct {
 	PFCDetailed    *string         `json:"pfc_detailed,omitempty"`
 	PaymentChannel *string         `json:"payment_channel,omitempty"`
 	Pending              bool            `json:"pending"`
+	// Recurring marks a transaction as part of a recurring series (subscription/bill).
+	// Set by the recurring-detection pass, not by Plaid. Drives the frontend badge and
+	// renders independently of whether a receipt is attached.
+	Recurring            bool            `json:"recurring"`
 	SyncedAt             time.Time       `json:"synced_at,omitempty"`
 	CorrectedPFCPrimary  *string         `json:"corrected_pfc_primary,omitempty"`
 	CorrectedPFCDetailed *string         `json:"corrected_pfc_detailed,omitempty"`
@@ -58,6 +62,22 @@ type TransactionLocation struct {
 type TransactionWithReceipt struct {
 	Transaction
 	Receipt *AttachedReceipt
+}
+
+// RecurringCandidate is one transaction row consumed by recurring detection: the
+// transaction's key facts plus, when it carries a REAL (non-derived) receipt match, that
+// receipt's id and subscription flag. Built from transaction_cache ⋈ receipt_matches ⋈
+// receipts — one row per transaction (a transaction has at most one match).
+type RecurringCandidate struct {
+	TransactionID  string
+	MerchantID     uuid.UUID
+	MerchantName   string  // raw transaction merchant name, for display/diagnostics
+	Date           string  // YYYY-MM-DD
+	Amount         float64
+	Recurring      bool    // the transaction's current recurring flag
+	Matched        bool    // has ANY receipt match (real or derived)
+	SourceReceipt  *uuid.UUID // receipt id of its REAL match, if any (match_method <> 'recurring')
+	IsSubscription *bool   // that source receipt's subscription flag
 }
 
 // AttachedReceipt is the receipt summary embedded inside a TransactionResponse.
@@ -110,6 +130,7 @@ type TransactionResponse struct {
 	PFCDetailed    *string          `json:"pfcDetailed,omitempty"`
 	PaymentChannel *string          `json:"paymentChannel,omitempty"`
 	Pending              bool             `json:"pending"`
+	Recurring            bool             `json:"recurring"`
 	MerchantLogo         *string          `json:"merchantLogo"`
 	CorrectedPFCPrimary  *string          `json:"correctedPfcPrimary,omitempty"`
 	CorrectedPFCDetailed *string          `json:"correctedPfcDetailed,omitempty"`

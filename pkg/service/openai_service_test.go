@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -118,3 +119,39 @@ func TestExtractDate(t *testing.T) {
 }
 
 func floatPtr(f float64) *float64 { return &f }
+
+// TestParseReceiptCompletion_IsSubscription verifies the OCR parser lifts the
+// isSubscription flag out of the model's structured output.
+func TestParseReceiptCompletion_IsSubscription(t *testing.T) {
+	mk := func(content string) []byte {
+		return []byte(`{"choices":[{"message":{"content":` + strconv.Quote(content) + `}}]}`)
+	}
+	cases := []struct {
+		name    string
+		content string
+		want    *bool
+	}{
+		{"subscription true", `{"merchantName":"SoundCloud","total":11.99,"lineItems":[],"isSubscription":true}`, boolPtr(true)},
+		{"subscription false", `{"merchantName":"Blue Bottle","total":6.50,"lineItems":[],"isSubscription":false}`, boolPtr(false)},
+		{"absent defaults false", `{"merchantName":"Blue Bottle","total":6.50,"lineItems":[]}`, boolPtr(false)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := ParseReceiptCompletion(mk(tc.content))
+			if r.Error != "" {
+				t.Fatalf("parse error: %s", r.Error)
+			}
+			if r.IsSubscription == nil || tc.want == nil {
+				if r.IsSubscription != tc.want {
+					t.Fatalf("IsSubscription = %v, want %v", r.IsSubscription, tc.want)
+				}
+				return
+			}
+			if *r.IsSubscription != *tc.want {
+				t.Fatalf("IsSubscription = %v, want %v", *r.IsSubscription, *tc.want)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

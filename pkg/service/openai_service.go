@@ -104,6 +104,7 @@ type openAIReceiptData struct {
 	Currency        string           `json:"currency"` // ISO 4217 (e.g. "USD", "MXN")
 	PaymentMethod   string           `json:"paymentMethod"`
 	LastFourDigits  string           `json:"lastFourDigits"`
+	IsSubscription  bool             `json:"isSubscription"`
 	LineItems       []openAILineItem `json:"lineItems"`
 }
 
@@ -236,6 +237,7 @@ Instructions:
 - Include subtotal, tax, tip or gratuity (map gratuity/service charge to the tip field), and total
 - Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If the merchant address is in Mexico and the symbol is $, use MXN. If ambiguous, default to USD.
 - Identify payment method and last 4 digits of card if visible
+- Set isSubscription to true if the receipt indicates a recurring/subscription charge (mentions a subscription, auto-renewal, a billing cycle, "recurring", "renews on", or "billed monthly/yearly"); otherwise false
 - If any field is not visible or unclear, use reasonable defaults (empty string for text, 0 for numbers)
 - IMPORTANT: For the transaction date, carefully distinguish the DATE from the TIME. They are separate fields. The date is the calendar day (month/day/year) and the time is the clock reading (hours:minutes). Do NOT mix digits from the time into the date.
 - The date on the receipt may appear in various formats (e.g. "MARCH 1, 2026", "03/01/26", "2026-03-01"). Parse it carefully and output in YYYY-MM-DD format.
@@ -260,6 +262,7 @@ func receiptJSONSchema() map[string]interface{} {
 			"currency":        map[string]string{"type": "string", "description": "ISO 4217 currency code (e.g. USD, EUR, MXN, GBP, JPY). Determine from currency symbols or text on the receipt."},
 			"paymentMethod":   map[string]string{"type": "string", "description": "Card brand or payment type (e.g., Visa, Mastercard, Apple Pay, Credit Card, Cash, Debit) — use the card brand name only; do not include card number digits (those go in lastFourDigits)"},
 			"lastFourDigits":  map[string]string{"type": "string", "description": "Last 4 digits of card if visible, otherwise empty string"},
+			"isSubscription":  map[string]string{"type": "boolean", "description": "True if this receipt is for a recurring/subscription charge — e.g. it mentions a subscription, auto-renewal, a billing cycle, 'recurring', 'renews on', or 'billed monthly/yearly'. False for ordinary one-off purchases."},
 			"lineItems": map[string]interface{}{
 				"type":        "array",
 				"description": "List of items purchased",
@@ -278,7 +281,7 @@ func receiptJSONSchema() map[string]interface{} {
 		},
 		"required": []string{
 			"merchantName", "merchantAddress", "transactionDate", "transactionTime",
-			"subtotal", "tax", "tip", "total", "currency", "paymentMethod", "lastFourDigits", "lineItems",
+			"subtotal", "tax", "tip", "total", "currency", "paymentMethod", "lastFourDigits", "isSubscription", "lineItems",
 		},
 		"additionalProperties": false,
 	}
@@ -352,6 +355,7 @@ func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 	total := data.Total
 
 	city, state := ParseAddressCityState(data.MerchantAddress)
+	isSubscription := data.IsSubscription
 
 	return &domain.OCRResult{
 		RawText:         rawBuf.String(),
@@ -369,6 +373,7 @@ func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 		Currency:        data.Currency,
 		PaymentMethod:   data.PaymentMethod,
 		LastFourDigits:  data.LastFourDigits,
+		IsSubscription:  &isSubscription,
 	}
 }
 
@@ -510,6 +515,7 @@ Instructions:
 - Include subtotal, tax, tip or gratuity (map gratuity/service charge to the tip field), and total
 - Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If text says "USD" or similar, use that. If ambiguous, default to USD.
 - Identify payment method and last 4 digits of card if mentioned
+- Set isSubscription to true if the text indicates a recurring/subscription charge (mentions a subscription, auto-renewal, a billing cycle, "recurring", "renews on", or "billed monthly/yearly"); otherwise false
 - If any field is not present, use reasonable defaults (empty string for text, 0 for numbers)
 - For dates, use YYYY-MM-DD format
 - For times, use HH:MM format (24-hour)

@@ -79,6 +79,10 @@ func (s *stubTxCacheRepo) FindByTransactionID(_ context.Context, _ string) (*dom
 func (s *stubTxCacheRepo) UpdateCorrectedCategory(_ context.Context, _ string, _, _ string) error {
 	return nil
 }
+func (s *stubTxCacheRepo) FindRecurringCandidates(_ context.Context, _ uuid.UUID) ([]domain.RecurringCandidate, error) {
+	return nil, nil
+}
+func (s *stubTxCacheRepo) SetRecurring(_ context.Context, _ []string) error { return nil }
 
 // ---------------------------------------------------------------------------
 // Test helpers

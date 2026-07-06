@@ -206,6 +206,7 @@ func BuildReceiptFromOCR(in ReceiptFromOCRInput) *domain.Receipt {
 	if ocr.LastFourDigits != "" {
 		receipt.LastFourDigits = &ocr.LastFourDigits
 	}
+	receipt.IsSubscription = ocr.IsSubscription
 	if ocr.TransactionTime != "" {
 		receipt.TransactionTime = &ocr.TransactionTime
 	}

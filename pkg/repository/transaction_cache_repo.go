@@ -40,6 +40,7 @@ var txnDBCols = []string{
 	"t.merchant_id", "t.category", "t.pfc_primary", "t.pfc_detailed", "t.payment_channel",
 	"t.pending", "t.synced_at",
 	"t.corrected_pfc_primary", "t.corrected_pfc_detailed", "t.category_corrected_at",
+	"t.recurring",
 }
 
 var merchantJoinCols = []string{
@@ -299,7 +300,7 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 		var mCanonical, mLogo sql.NullString
 		var dt, syncedAt, correctedAt ScannableTime
 		var categoryStr string
-		var pendingVal ScannableBool
+		var pendingVal, recurringVal ScannableBool
 
 		// receipt match fields
 		var rmMethod sql.NullString
@@ -317,6 +318,7 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 			&twr.Amount, &twr.Date, &dt, &twr.Name,
 			&merchantIDStr, &categoryStr, &twr.PFCPrimary, &twr.PFCDetailed, &twr.PaymentChannel,
 			&pendingVal, &syncedAt, &twr.CorrectedPFCPrimary, &twr.CorrectedPFCDetailed, &correctedAt,
+			&recurringVal,
 			&mCanonical, &mLogo,
 			&rID, &rImageURL, &rThumbnailURL, &rMerchantName, &rTotal, &rSubtotal, &rTax, &rTip,
 			&rPaymentMethod, &rLastFour, &rDate, &rLineItems,
@@ -337,6 +339,7 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 			}
 		}
 		twr.Pending = pendingVal.Val
+		twr.Recurring = recurringVal.Val
 		twr.Category = json.RawMessage(categoryStr)
 		twr.DateTime = dt.Val
 		if syncedAt.Val != nil {
@@ -560,6 +563,103 @@ func (r *TransactionCacheRepo) UpdateCorrectedCategory(ctx context.Context, tran
 	return nil
 }
 
+// FindRecurringCandidates returns every transaction for the user that has a merchant_id,
+// joined with its (at most one) receipt match and — when that match is real (not a
+// carried-forward 'recurring' link) — the source receipt id and its subscription flag.
+// Ordered by (merchant, date) so the caller can walk each merchant's series in time order.
+func (r *TransactionCacheRepo) FindRecurringCandidates(ctx context.Context, userID uuid.UUID) ([]domain.RecurringCandidate, error) {
+	// Merchant display name comes from merchants.canonical_name (joined on merchant_id) — the
+	// sync path writes merchant_id, not transaction_cache.merchant_name, so that column is
+	// unreliable for synced rows.
+	rows, err := r.SQ.Select(
+		"tc.transaction_id", "tc.merchant_id", "m.canonical_name", "tc.date", "tc.amount", "tc.recurring",
+		"CASE WHEN rm.id IS NOT NULL THEN 1 ELSE 0 END AS matched",
+		"CASE WHEN rm.match_method <> 'recurring' THEN rm.receipt_id END AS source_receipt",
+		"CASE WHEN rm.match_method <> 'recurring' THEN r.is_subscription END AS is_subscription",
+	).
+		From("transaction_cache tc").
+		LeftJoin("merchants m ON m.id = tc.merchant_id").
+		LeftJoin("receipt_matches rm ON rm.transaction_id = tc.transaction_id").
+		LeftJoin("receipts r ON r.id = rm.receipt_id").
+		Where(sq.Eq{"tc.user_id": userID.String()}).
+		Where("tc.merchant_id IS NOT NULL").
+		OrderBy("tc.merchant_id", "tc.date ASC").
+		QueryContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.RecurringCandidate
+	for rows.Next() {
+		var c domain.RecurringCandidate
+		var merchantIDStr string
+		var merchantName sql.NullString
+		var dateVal ScannableTime
+		var recurringVal, matchedVal ScannableBool
+		var sourceReceipt sql.NullString
+		var isSub sql.NullBool
+
+		if err := rows.Scan(
+			&c.TransactionID, &merchantIDStr, &merchantName, &dateVal, &c.Amount, &recurringVal,
+			&matchedVal, &sourceReceipt, &isSub,
+		); err != nil {
+			return nil, err
+		}
+		c.MerchantID = ScanUUID(merchantIDStr)
+		c.MerchantName = merchantName.String
+		if dateVal.Val != nil {
+			c.Date = dateVal.Val.Format("2006-01-02")
+		}
+		c.Recurring = recurringVal.Val
+		c.Matched = matchedVal.Val
+		if sourceReceipt.Valid && sourceReceipt.String != "" {
+			id := ScanUUID(sourceReceipt.String)
+			c.SourceReceipt = &id
+		}
+		if isSub.Valid {
+			b := isSub.Bool
+			c.IsSubscription = &b
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// AllUserIDsWithTransactions returns every distinct user id that has at least one cached
+// transaction. Useful for walking the whole user base when scanning for recurring series.
+func (r *TransactionCacheRepo) AllUserIDsWithTransactions(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := r.SQ.Select("DISTINCT user_id").
+		From("transaction_cache").
+		QueryContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		ids = append(ids, ScanUUID(s))
+	}
+	return ids, rows.Err()
+}
+
+// SetRecurring marks the given transactions as part of a recurring series.
+func (r *TransactionCacheRepo) SetRecurring(ctx context.Context, transactionIDs []string) error {
+	if len(transactionIDs) == 0 {
+		return nil
+	}
+	_, err := r.SQ.Update("transaction_cache").
+		Set("recurring", true).
+		Where(sq.Eq{"transaction_id": transactionIDs}).
+		ExecContext(ctx)
+	return err
+}
+
 // --- scan helpers ---
 
 func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, error) {
@@ -569,18 +669,20 @@ func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, 
 	var mCanonical, mLogo sql.NullString
 	var dateVal, dt, syncedAt, correctedAt ScannableTime
 	var categoryStr string
-	var pendingVal ScannableBool
+	var pendingVal, recurringVal ScannableBool
 
 	err := s.Scan(
 		&idStr, &userIDStr, &t.TransactionID, &t.AccountID,
 		&t.Amount, &dateVal, &dt, &t.Name,
 		&merchantIDStr, &categoryStr, &t.PFCPrimary, &t.PFCDetailed, &t.PaymentChannel,
 		&pendingVal, &syncedAt, &t.CorrectedPFCPrimary, &t.CorrectedPFCDetailed, &correctedAt,
+		&recurringVal,
 		&mCanonical, &mLogo,
 	)
 	if err != nil {
 		return nil, err
 	}
+	t.Recurring = recurringVal.Val
 
 	t.ID = ScanUUID(idStr)
 	t.UserID = ScanUUID(userIDStr)

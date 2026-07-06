@@ -38,6 +38,7 @@ var receiptCols = []string{
 	"date", "transaction_time", "raw_text", "ocr_error", "line_items",
 	"source", "status",
 	"content_hash", "gmail_message_id", "order_id", "merchant_key", "duplicate_of",
+	"is_subscription",
 	"created_at", "updated_at",
 }
 
@@ -105,6 +106,7 @@ func (r *ReceiptRepo) Create(ctx context.Context, rcpt *domain.Receipt) error {
 			rcpt.RawText, rcpt.OCRError, string(lineItems),
 			rcpt.Source, rcpt.Status,
 			rcpt.ContentHash, rcpt.GmailMessageID, rcpt.OrderID, rcpt.MerchantKey, duplicateOfStr,
+			rcpt.IsSubscription,
 			now, now,
 		).
 		ExecContext(ctx)
@@ -324,6 +326,7 @@ func (r *ReceiptRepo) Update(ctx context.Context, rcpt *domain.Receipt) error {
 		Set("order_id", rcpt.OrderID).
 		Set("merchant_key", rcpt.MerchantKey).
 		Set("duplicate_of", duplicateOfStr).
+		Set("is_subscription", rcpt.IsSubscription).
 		Set("updated_at", now).
 		Where(sq.Eq{"id": rcpt.ID.String()}).
 		ExecContext(ctx)
@@ -531,6 +534,7 @@ func (r *ReceiptRepo) scanReceipt(s scanner) (*domain.Receipt, error) {
 		&dateVal, &rcpt.TransactionTime, &rcpt.RawText, &rcpt.OCRError, &lineItemsStr,
 		&rcpt.Source, &rcpt.Status,
 		&rcpt.ContentHash, &rcpt.GmailMessageID, &rcpt.OrderID, &rcpt.MerchantKey, &duplicateOfStr,
+		&rcpt.IsSubscription,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -580,6 +584,7 @@ func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch,
 		&dateVal, &rwm.TransactionTime, &rwm.RawText, &rwm.OCRError, &lineItemsStr,
 		&rwm.Source, &rwm.Status,
 		&rwm.ContentHash, &rwm.GmailMessageID, &rwm.OrderID, &rwm.MerchantKey, &duplicateOfStr,
+		&rwm.IsSubscription,
 		&createdAt, &updatedAt,
 		&matchID, &matchReceiptID, &matchTxnID, &matchAccountID,
 		&matchConfidence, &matchMethod, &matchReason, &matchedAt,
