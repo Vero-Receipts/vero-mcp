@@ -61,8 +61,9 @@ type SeriesReport struct {
 	SourceReceipt *uuid.UUID // earliest real (non-derived) receipt in the series, if any
 	SourceIsSub   *bool      // that receipt's is_subscription (nil = not yet evaluated)
 	Established    bool       // qualifies to be marked recurring now, with known data
-	// NeedsOCR is true for a 2-occurrence series whose establishment hinges on a source
-	// receipt we have not OCR'd for the subscription flag yet. A re-OCR pass resolves these.
+	// NeedsOCR is true when the series has a source receipt whose subscription flag has not
+	// been evaluated yet. A re-OCR pass resolves it, which decides whether to itemize (and,
+	// for a 2-occurrence series, whether it establishes at all).
 	NeedsOCR bool
 	Flag     []string        // transaction ids to mark recurring (when Established)
 	Itemize  []ItemizeTarget // derived matches to create (when Established and a source exists)
@@ -120,7 +121,9 @@ func analyzeCluster(cluster []domain.RecurringCandidate) (SeriesReport, bool) {
 	}
 
 	established := hasSubReceipt || len(cluster) >= recurringMinPatternCount
-	needsOCR := !established && source != nil && srcIsSub == nil && len(cluster) < recurringMinPatternCount
+	// A source receipt with an unknown subscription flag must be OCR'd before we can decide
+	// whether to itemize — and, for a 2-occurrence series, whether it even establishes.
+	needsOCR := source != nil && srcIsSub == nil
 	if !established && !needsOCR {
 		return SeriesReport{}, false
 	}
@@ -142,11 +145,14 @@ func analyzeCluster(cluster []domain.RecurringCandidate) (SeriesReport, bool) {
 				r.Flag = append(r.Flag, m.TransactionID)
 			}
 		}
-		if source != nil {
-			for _, m := range cluster {
-				if !m.Matched {
-					r.Itemize = append(r.Itemize, ItemizeTarget{TransactionID: m.TransactionID, ReceiptID: *source})
-				}
+	}
+	// Itemize ONLY from a confirmed subscription receipt. A ≥3-occurrence pattern justifies the
+	// recurring badge but must never carry a specific receipt forward onto the other charges —
+	// otherwise one restaurant/rideshare/gas receipt gets smeared across unrelated visits.
+	if hasSubReceipt && source != nil {
+		for _, m := range cluster {
+			if !m.Matched {
+				r.Itemize = append(r.Itemize, ItemizeTarget{TransactionID: m.TransactionID, ReceiptID: *source})
 			}
 		}
 	}
