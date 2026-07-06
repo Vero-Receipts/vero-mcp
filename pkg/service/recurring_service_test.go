@@ -87,10 +87,10 @@ func TestEvaluateSeries(t *testing.T) {
 		}
 	})
 
-	t.Run("pattern of 3 with a non-subscription source flags but does NOT itemize", func(t *testing.T) {
-		// e.g. three same-price McDonald's visits, one of which has a (non-subscription)
-		// receipt. The pattern earns the badge, but the receipt must not be smeared onto
-		// the other two visits.
+	t.Run("pattern of 3 with a source itemizes regardless of subscription flag", func(t *testing.T) {
+		// A ≥3-occurrence, same-amount, regular-cadence series is established by pattern alone,
+		// so its source receipt is carried forward even without a subscription flag. (Real
+		// non-subscription spend doesn't repeat the identical bill, so the amount band filters it.)
 		cluster := []domain.RecurringCandidate{
 			mkCand("t1", 12.00, "2026-03-10", false, true, &rid, &fal), // receipt, is_sub=false
 			mkCand("t2", 12.00, "2026-04-10", false, false, nil, nil),
@@ -100,12 +100,12 @@ func TestEvaluateSeries(t *testing.T) {
 		if len(flag) != 3 {
 			t.Fatalf("flag = %v, want all 3 marked recurring", flag)
 		}
-		if len(itemize) != 0 {
-			t.Fatalf("itemize = %v, want none (source is not a subscription)", itemize)
+		if len(itemize) != 2 {
+			t.Fatalf("itemize = %v, want t2 and t3 carried from the source", itemize)
 		}
 	})
 
-	t.Run("pattern of 3 with an unevaluated source needs OCR and does not itemize yet", func(t *testing.T) {
+	t.Run("pattern of 3 with an unevaluated source itemizes without needing OCR", func(t *testing.T) {
 		cluster := []domain.RecurringCandidate{
 			mkCand("t1", 12.00, "2026-03-10", false, true, &rid, nil), // receipt, is_sub unknown
 			mkCand("t2", 12.00, "2026-04-10", false, false, nil, nil),
@@ -118,11 +118,11 @@ func TestEvaluateSeries(t *testing.T) {
 		if !r.Established {
 			t.Errorf("Established = false, want true (pattern >= 3)")
 		}
-		if !r.NeedsOCR {
-			t.Errorf("NeedsOCR = false, want true (source subscription flag unknown)")
+		if r.NeedsOCR {
+			t.Errorf("NeedsOCR = true, want false (>=3 is established by pattern, no OCR needed)")
 		}
-		if len(r.Itemize) != 0 {
-			t.Errorf("Itemize = %v, want none until the source is OCR'd", r.Itemize)
+		if len(r.Itemize) != 2 {
+			t.Errorf("Itemize = %v, want t2 and t3", r.Itemize)
 		}
 	})
 
