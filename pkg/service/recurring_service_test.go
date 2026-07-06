@@ -126,11 +126,31 @@ func TestEvaluateSeries(t *testing.T) {
 		}
 	})
 
+	t.Run("duplicate charges (0-day gaps) don't break cadence and are all flagged/itemized", func(t *testing.T) {
+		// Same real charge re-imported after a re-link: Apr and May each appear twice. The
+		// duplicates collapse for cadence (→ clean monthly), and every member row is flagged
+		// and the bare ones itemized.
+		cluster := []domain.RecurringCandidate{
+			mkCand("apr_a", 11.99, "2026-04-24", false, true, &rid, &tru), // source (real match)
+			mkCand("apr_b", 11.99, "2026-04-24", false, false, nil, nil),  // duplicate of apr
+			mkCand("may_a", 11.99, "2026-05-24", false, false, nil, nil),
+			mkCand("may_b", 11.99, "2026-05-24", false, false, nil, nil), // duplicate of may
+			mkCand("jun", 11.99, "2026-06-24", false, false, nil, nil),
+		}
+		flag, itemize := evaluateSeries(cluster)
+		if len(flag) != 5 {
+			t.Fatalf("flag = %v, want all 5 members marked recurring", flag)
+		}
+		if len(itemize) != 4 { // every member except the matched source
+			t.Fatalf("itemize = %d targets, want 4 bare members carried from source", len(itemize))
+		}
+	})
+
 	t.Run("irregular cadence is rejected", func(t *testing.T) {
 		cluster := []domain.RecurringCandidate{
 			mkCand("t1", 10.00, "2026-05-01", false, false, nil, nil),
-			mkCand("t2", 10.00, "2026-05-03", false, false, nil, nil), // 2-day gap
-			mkCand("t3", 10.00, "2026-06-02", false, false, nil, nil),
+			mkCand("t2", 10.00, "2026-05-21", false, false, nil, nil), // 20-day gap: no bucket
+			mkCand("t3", 10.00, "2026-06-10", false, false, nil, nil),
 		}
 		flag, _ := evaluateSeries(cluster)
 		if flag != nil {
