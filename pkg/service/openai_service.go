@@ -22,7 +22,8 @@ import (
 
 const openAIURL = "https://api.openai.com/v1/chat/completions"
 
-// OpenAIService uses GTP-5-Nano Vision to parse receipt images into structured data.
+// OpenAIService parses receipts into structured data: GPT-5-Mini Vision for
+// images, GPT-5-Nano for text bodies (email/PDF) and the merchant/category calls.
 type OpenAIService struct {
 	apiKey     string
 	httpClient *http.Client
@@ -133,7 +134,7 @@ func mimeTypeFromPath(filePath string) string {
 	return "image/jpeg"
 }
 
-// ParseImage sends the receipt image to GTP-5-Nano Vision and returns a structured OCRResult.
+// ParseImage sends the receipt image to GPT-5-Mini Vision and returns a structured OCRResult.
 func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain.OCRResult {
 	if s.apiKey == "" {
 		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
@@ -151,7 +152,7 @@ func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain
 	return s.ParseImageData(ctx, imageBytes, mimeType)
 }
 
-// ParseImageData sends the receipt image bytes to GTP-5-Nano Vision and returns a structured OCRResult.
+// ParseImageData sends the receipt image bytes to GPT-5-Mini Vision and returns a structured OCRResult.
 func (s *OpenAIService) ParseImageData(ctx context.Context, imageBytes []byte, mimeType string) *domain.OCRResult {
 	if s.apiKey == "" {
 		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
@@ -194,7 +195,13 @@ func BuildImageReceiptRequest(imageBytes []byte, mimeType string) ([]byte, error
 	schema := receiptJSONSchema()
 
 	reqBody := map[string]interface{}{
-		"model": "gpt-5-nano",
+		"model": "gpt-5-mini",
+		// Minimal reasoning is more accurate here, not merely cheaper: with the
+		// default (medium) effort the model consolidates line items it should not
+		// and drifts on the item total, while minimal reproduces it exactly. It is
+		// also ~4x faster, which keeps a long receipt clear of the client timeout.
+		// gpt-5-nano under-extracts long receipts at every effort level.
+		"reasoning_effort": "minimal",
 		"messages": []map[string]interface{}{
 			{
 				"role": "user",
@@ -234,7 +241,7 @@ Instructions:
 - List all purchased items with their quantities and prices, including add-ons and customizations that have their own price as separate line items; do not split a single named menu item into multiple line items
 - If a line item starts with the count (e.g. "2 Can Modelo"), move that leading count to the quantity field and use only the item name as the description
 - Do not include taxes, fees, or carrier-imposed charges as line items — those belong in the tax field
-- Include subtotal, tax, tip or gratuity (map gratuity/service charge to the tip field), and total
+- Include subtotal, tax, tip or gratuity (map gratuity/service charge to the tip field), and total. A tip may be handwritten below the printed total; report it in the tip field. Report each amount as the receipt states it; do not compute or reconcile them against each other.
 - Identify the currency and return as ISO 4217 code: $ = USD, € = EUR, £ = GBP, ¥ = JPY, ₹ = INR, MX$ = MXN. If the merchant address is in Mexico and the symbol is $, use MXN. If ambiguous, default to USD.
 - Identify payment method and last 4 digits of card if visible
 - Set isSubscription to true if the receipt indicates a recurring/subscription charge (mentions a subscription, auto-renewal, a billing cycle, "recurring", "renews on", or "billed monthly/yearly"); otherwise false
@@ -243,7 +250,8 @@ Instructions:
 - The date on the receipt may appear in various formats (e.g. "MARCH 1, 2026", "03/01/26", "2026-03-01"). Parse it carefully and output in YYYY-MM-DD format.
 - If the year is ambiguous or appears to be in the past (e.g. 2023 for a recent receipt), double-check the receipt for other year clues (e.g. return policy dates, copyright notices). When in doubt and the current year is 2026, prefer the current year.
 - For times, use HH:MM format (24-hour)
-- All monetary amounts should be numbers (not strings)`
+- All monetary amounts should be numbers (not strings)
+- Merchant name should be a brand name, that is expected to be shown on transactions. It should not contain branch specific information.`
 }
 
 // receiptJSONSchema returns the JSON schema used for structured receipt output.
@@ -251,7 +259,7 @@ func receiptJSONSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"merchantName":    map[string]string{"type": "string", "description": "Name of the merchant or store"},
+			"merchantName":    map[string]string{"type": "string", "description": "Name of the merchant or store. Use the brand name, not the store or branch specific name"},
 			"merchantAddress": map[string]string{"type": "string", "description": "Street address of the merchant — do not include the merchant or business name"},
 			"transactionDate": map[string]string{"type": "string", "description": "Date of transaction in YYYY-MM-DD format"},
 			"transactionTime": map[string]string{"type": "string", "description": "Time of transaction in HH:MM format"},
@@ -336,23 +344,24 @@ func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 	if cur == "" {
 		cur = "USD"
 	}
-	var rawBuf bytes.Buffer
-	fmt.Fprintf(&rawBuf, "Merchant: %s\n", data.MerchantName)
-	fmt.Fprintf(&rawBuf, "Date: %s\n", data.TransactionDate)
-	fmt.Fprintf(&rawBuf, "Time: %s\n", data.TransactionTime)
-	fmt.Fprintf(&rawBuf, "Subtotal: %.2f %s\n", data.Subtotal, cur)
-	fmt.Fprintf(&rawBuf, "Tax: %.2f %s\n", data.Tax, cur)
-	fmt.Fprintf(&rawBuf, "Tip: %.2f %s\n", data.Tip, cur)
-	fmt.Fprintf(&rawBuf, "Total: %.2f %s\n", data.Total, cur)
-	rawBuf.WriteString("Items:\n")
-	for _, item := range lineItems {
-		fmt.Fprintf(&rawBuf, "%.gx %s - %.2f %s\n", item.Quantity, item.Description, item.Price, cur)
-	}
 
 	subtotal := data.Subtotal
 	tax := data.Tax
 	tip := data.Tip
-	total := data.Total
+	total := applyTipToTotal(data.Subtotal, data.Tax, data.Tip, data.Total)
+
+	var rawBuf bytes.Buffer
+	fmt.Fprintf(&rawBuf, "Merchant: %s\n", data.MerchantName)
+	fmt.Fprintf(&rawBuf, "Date: %s\n", data.TransactionDate)
+	fmt.Fprintf(&rawBuf, "Time: %s\n", data.TransactionTime)
+	fmt.Fprintf(&rawBuf, "Subtotal: %.2f %s\n", subtotal, cur)
+	fmt.Fprintf(&rawBuf, "Tax: %.2f %s\n", tax, cur)
+	fmt.Fprintf(&rawBuf, "Tip: %.2f %s\n", tip, cur)
+	fmt.Fprintf(&rawBuf, "Total: %.2f %s\n", total, cur)
+	rawBuf.WriteString("Items:\n")
+	for _, item := range lineItems {
+		fmt.Fprintf(&rawBuf, "%.gx %s - %.2f %s\n", item.Quantity, item.Description, item.Price, cur)
+	}
 
 	city, state := ParseAddressCityState(data.MerchantAddress)
 	isSubscription := data.IsSubscription
@@ -375,6 +384,29 @@ func ParseReceiptCompletion(respBytes []byte) *domain.OCRResult {
 		LastFourDigits:  data.LastFourDigits,
 		IsSubscription:  &isSubscription,
 	}
+}
+
+// applyTipToTotal returns the amount actually charged to the card.
+//
+// Restaurant receipts routinely print a pre-tip total, with the tip and the
+// final total added by hand underneath. Vision models read the printed total
+// literally, so the tip goes missing from a figure that has to match a bank
+// transaction. When the reported total accounts for everything except the tip,
+// the tip was charged on top of it.
+//
+// This deliberately does nothing unless the arithmetic reconciles exactly: the
+// schema has no field for fees or discounts (the prompt folds them into tax and
+// tip), so a total that does not equal subtotal+tax has something in it we
+// cannot model, and guessing there would do more harm than leaving it alone.
+//
+// Kept out of the prompt on purpose — asking the model to apply this rule makes
+// it treat the fields as an equation to satisfy, and it starts inventing a
+// subtotal and back-solving tax on receipts that print neither.
+func applyTipToTotal(subtotal, tax, tip, total float64) float64 {
+	if tip > 0 && math.Abs(total-(subtotal+tax)) < 0.01 {
+		return subtotal + tax + tip
+	}
+	return total
 }
 
 // consolidateLineItems merges line items that share the same description and

@@ -1,16 +1,16 @@
 {
-  "request_sha256": "92be83e6dbbce39f566993c7208d3c753a99cd32e020404779248ab95e4907e7",
+  "request_sha256": "88e800c5a65e82c9d941df5a93fac1f78d6a677eb57d8363fd01687074e44f07",
   "response": {
-    "id": "chatcmpl-DlxTBqcnLSrLDf8fRcHWk8Nx2cDI0",
+    "id": "chatcmpl-E1s7NzHHdYGUOFGvSXsBz1l9sOZ8O",
     "object": "chat.completion",
-    "created": 1780322389,
-    "model": "gpt-5-nano-2025-08-07",
+    "created": 1784115065,
+    "model": "gpt-5-mini-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"KEY WEST SHRIMP WRAP\",\"quantity\":1,\"totalPrice\":23,\"unitPrice\":23},{\"description\":\"PARC BURGER\",\"quantity\":1,\"totalPrice\":28,\"unitPrice\":28},{\"description\":\"PARC BURGER\",\"quantity\":1,\"totalPrice\":28,\"unitPrice\":28},{\"description\":\"DIET COKE\",\"quantity\":1,\"totalPrice\":5,\"unitPrice\":5},{\"description\":\"TRUFFLE FRIES\",\"quantity\":1,\"totalPrice\":15,\"unitPrice\":15}],\"merchantAddress\":\"800 Woodward Ave, Detroit, MI 48226\",\"merchantName\":\"Parc Detroit\",\"paymentMethod\":\"Visa\",\"subtotal\":99,\"tax\":5.94,\"tip\":20,\"total\":124.94,\"transactionDate\":\"2026-05-28\",\"transactionTime\":\"13:20\"}",
+          "content": "{\n  \"currency\": \"USD\",\n  \"isSubscription\": false,\n  \"lastFourDigits\": \"2676\",\n  \"lineItems\": [\n    {\n      \"description\": \"KEY WEST SHRIMP WRAP\",\n      \"quantity\": 1,\n      \"totalPrice\": 23,\n      \"unitPrice\": 23\n    },\n    {\n      \"description\": \"PARC BURGER\",\n      \"quantity\": 1,\n      \"totalPrice\": 28,\n      \"unitPrice\": 28\n    },\n    {\n      \"description\": \"PARC BURGER\",\n      \"quantity\": 1,\n      \"totalPrice\": 28,\n      \"unitPrice\": 28\n    },\n    {\n      \"description\": \"DIET COKE\",\n      \"quantity\": 1,\n      \"totalPrice\": 5,\n      \"unitPrice\": 5\n    },\n    {\n      \"description\": \"TRUFFLE FRIES\",\n      \"quantity\": 1,\n      \"totalPrice\": 15,\n      \"unitPrice\": 15\n    }\n  ],\n  \"merchantAddress\": \"800 Woodward Ave, Detroit, MI 48226\",\n  \"merchantName\": \"Parc\",\n  \"paymentMethod\": \"Visa\",\n  \"subtotal\": 99,\n  \"tax\": 5.94,\n  \"tip\": 20,\n  \"total\": 104.94,\n  \"transactionDate\": \"2026-05-28\",\n  \"transactionTime\": \"13:20\"\n}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 4622,
-      "completion_tokens": 2699,
-      "total_tokens": 7321,
+      "prompt_tokens": 4377,
+      "completion_tokens": 326,
+      "total_tokens": 4703,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 2496,
+        "reasoning_tokens": 0,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

@@ -1,16 +1,16 @@
 {
-  "request_sha256": "9a77510b272a9e069ad6eec9c4b37339a19f20eba30a38f3fddf045a81cb67a4",
+  "request_sha256": "6f5e50a71ad49d7b77c3de503832ee4ddbe32e16fee323d785e7bda6b1c94e9a",
   "response": {
-    "id": "chatcmpl-DlxOJSNk9kRqSaY2aiazlPfczDO7t",
+    "id": "chatcmpl-E1sILAa31jctQFvNfC7Pr7t5MY8vE",
     "object": "chat.completion",
-    "created": 1780322087,
+    "created": 1784115745,
     "model": "gpt-5-nano-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"4242\",\"lineItems\":[{\"description\":\"Grande Latte\",\"quantity\":1,\"totalPrice\":5.45,\"unitPrice\":5.45},{\"description\":\"Blueberry Scone\",\"quantity\":1,\"totalPrice\":3.25,\"unitPrice\":3.25}],\"merchantAddress\":\"123 Main Street, Seattle, WA 98101\",\"merchantName\":\"Starbucks\",\"paymentMethod\":\"Visa\",\"subtotal\":8.70,\"tax\":0.78,\"tip\":0,\"total\":9.48,\"transactionDate\":\"2025-03-15\",\"transactionTime\":\"09:32\"}",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":false,\"lastFourDigits\":\"4242\",\"lineItems\":[{\"description\":\"Grande Latte\",\"quantity\":1,\"totalPrice\":5.45,\"unitPrice\":5.45},{\"description\":\"Blueberry Scone\",\"quantity\":1,\"totalPrice\":3.25,\"unitPrice\":3.25}],\"merchantAddress\":\"123 Main Street, Seattle, WA 98101\",\"merchantName\":\"Starbucks\",\"paymentMethod\":\"Visa\",\"subtotal\":8.7,\"tax\":0.78,\"tip\":0,\"total\":9.48,\"transactionDate\":\"2025-03-15\",\"transactionTime\":\"09:32\"}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 771,
-      "completion_tokens": 1935,
-      "total_tokens": 2706,
+      "prompt_tokens": 899,
+      "completion_tokens": 981,
+      "total_tokens": 1880,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 1792,
+        "reasoning_tokens": 832,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0
