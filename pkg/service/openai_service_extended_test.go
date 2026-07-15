@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -365,9 +366,9 @@ func TestMimeTypeFromPath(t *testing.T) {
 		{"/path/to/file.gif", "image/gif"},
 		{"/path/to/file.webp", "image/webp"},
 		{"/path/to/file.heic", "image/heic"},
-		{"/path/to/file.bmp", "image/jpeg"},  // unknown defaults to jpeg
-		{"/path/to/file.txt", "image/jpeg"},   // unknown defaults to jpeg
-		{"file.PNG", "image/jpeg"},            // case-sensitive, .PNG != .png
+		{"/path/to/file.bmp", "image/jpeg"}, // unknown defaults to jpeg
+		{"/path/to/file.txt", "image/jpeg"}, // unknown defaults to jpeg
+		{"file.PNG", "image/jpeg"},          // case-sensitive, .PNG != .png
 	}
 
 	for _, tt := range tests {
@@ -496,6 +497,65 @@ func TestParseReceiptCompletion_ConsolidatesDuplicateItems(t *testing.T) {
 	}
 	if got.UnitPrice != 5.99 {
 		t.Errorf("LineItems[0].UnitPrice = %.2f, want 5.99", got.UnitPrice)
+	}
+}
+
+func TestApplyTipToTotal(t *testing.T) {
+	tests := []struct {
+		name                      string
+		subtotal, tax, tip, total float64
+		want                      float64
+	}{
+		{
+			// parc: printed total $104.94, handwritten "+ Tip: 20.00 = Total: 124.94".
+			name:     "pre-tip printed total is corrected",
+			subtotal: 99, tax: 5.94, tip: 20, total: 104.94, want: 124.94,
+		},
+		{
+			// vivios: same shape, smaller numbers.
+			name:     "pre-tip printed total, small receipt",
+			subtotal: 26, tax: 1.14, tip: 5, total: 27.14, want: 32.14,
+		},
+		{
+			name:     "total already includes the tip - left alone",
+			subtotal: 99, tax: 5.94, tip: 20, total: 124.94, want: 124.94,
+		},
+		{
+			name:     "no tip - left alone",
+			subtotal: 8.78, tax: 0, tip: 0, total: 8.78, want: 8.78,
+		},
+		{
+			// receipt6 prints no subtotal, so the arithmetic cannot reconcile and
+			// the total must be trusted as read.
+			name:     "no printed subtotal - left alone",
+			subtotal: 0, tax: 0.75, tip: 0, total: 143.24, want: 143.24,
+		},
+		{
+			// A discount or fee we cannot model means subtotal+tax != total, so we
+			// have no basis to conclude the tip is missing.
+			name:     "unexplained difference with a tip - left alone",
+			subtotal: 100, tax: 5, tip: 10, total: 95, want: 95,
+		},
+		{
+			// A half-cent gap between the printed total and subtotal+tax still
+			// reconciles, so the tip is still applied.
+			name:     "sub-cent rounding still counts as reconciled",
+			subtotal: 10, tax: 0.995, tip: 2, total: 11, want: 12.995,
+		},
+		{
+			// Two cents out is over the line: something unmodelled is in there.
+			name:     "cents out does not reconcile",
+			subtotal: 10, tax: 1, tip: 2, total: 11.02, want: 11.02,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applyTipToTotal(tt.subtotal, tt.tax, tt.tip, tt.total)
+			if math.Abs(got-tt.want) > 0.005 {
+				t.Errorf("applyTipToTotal(%v, %v, %v, %v) = %v, want %v",
+					tt.subtotal, tt.tax, tt.tip, tt.total, got, tt.want)
+			}
+		})
 	}
 }
 

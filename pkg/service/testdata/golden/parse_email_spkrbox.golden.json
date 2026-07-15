@@ -1,16 +1,16 @@
 {
-  "request_sha256": "052746a98ed7a36eb29cdbb38c385523313f3fe69be1fefc8954ef5fa1303e70",
+  "request_sha256": "0d181e9022e2e50c19fdf7e9a6dbe15d1c7f43f44f4f98c80490c6e8a6d7da4b",
   "response": {
-    "id": "chatcmpl-DlxOVLDu1bs2Dl4GxtsdnmPGk206s",
+    "id": "chatcmpl-E1sITiHXhU6qVw2TPIHaP8Gbn2fe2",
     "object": "chat.completion",
-    "created": 1780322099,
+    "created": 1784115753,
     "model": "gpt-5-nano-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"Can Modelo\",\"quantity\":2,\"totalPrice\":12.0,\"unitPrice\":6.0}],\"merchantAddress\":\"200 Grand River Avenue, Detroit, MI 48226\",\"merchantName\":\"SPKRBOX\",\"paymentMethod\":\"VISA CREDIT\",\"subtotal\":12.0,\"tax\":0.0,\"tip\":2.26,\"total\":14.26,\"transactionDate\":\"2026-05-25\",\"transactionTime\":\"23:17\"}",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":false,\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"Can Modelo\",\"quantity\":2,\"totalPrice\":12,\"unitPrice\":6}],\"merchantAddress\":\"200 Grand River Avenue, Detroit, MI 48226\",\"merchantName\":\"SPKRBOX\",\"paymentMethod\":\"VISA CREDIT\",\"subtotal\":12,\"tax\":0,\"tip\":2.26,\"total\":14.26,\"transactionDate\":\"2026-05-25\",\"transactionTime\":\"23:17\"}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 918,
-      "completion_tokens": 2044,
-      "total_tokens": 2962,
+      "prompt_tokens": 1046,
+      "completion_tokens": 2361,
+      "total_tokens": 3407,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 1920,
+        "reasoning_tokens": 2240,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

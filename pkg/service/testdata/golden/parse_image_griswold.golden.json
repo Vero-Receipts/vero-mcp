@@ -1,16 +1,16 @@
 {
-  "request_sha256": "336423ef6f11bc182d5707632947328cd1dcc34f1d41a6b26ebcae9312e27b61",
+  "request_sha256": "ac45bd82f6b930f324be83f38c870c98af3997f1a83290a59fd68ce8f3049503",
   "response": {
-    "id": "chatcmpl-DlxTW6jY6StF5sKDEQ2cJdcbZSR2g",
+    "id": "chatcmpl-E1s7Ug6HK81alHZ1UKLoFPgRPS8og",
     "object": "chat.completion",
-    "created": 1780322410,
-    "model": "gpt-5-nano-2025-08-07",
+    "created": 1784115072,
+    "model": "gpt-5-mini-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"GROCERY\",\"quantity\":1,\"totalPrice\":5.99,\"unitPrice\":5.99},{\"description\":\"CHOBANI STRAWBERRY\",\"quantity\":1,\"totalPrice\":2.79,\"unitPrice\":2.79}],\"merchantAddress\":\"735 GRISWOLD ST, DETROIT, MI\",\"merchantName\":\"GRISWOLD MARKET \u0026 MEATS\",\"paymentMethod\":\"Visa\",\"subtotal\":8.78,\"tax\":0,\"tip\":0,\"total\":8.78,\"transactionDate\":\"2026-05-27\",\"transactionTime\":\"20:28\"}",
+          "content": "{\n  \"currency\": \"USD\",\n  \"isSubscription\": false,\n  \"lastFourDigits\": \"2676\",\n  \"lineItems\": [\n    {\n      \"description\": \"GROCERY\",\n      \"quantity\": 1,\n      \"totalPrice\": 5.99,\n      \"unitPrice\": 5.99\n    },\n    {\n      \"description\": \"CHOBANI STRAWBERRY\",\n      \"quantity\": 1,\n      \"totalPrice\": 2.79,\n      \"unitPrice\": 2.79\n    }\n  ],\n  \"merchantAddress\": \"735 Griswold St., Detroit, MI\",\n  \"merchantName\": \"Griswold Market \u0026 Meats\",\n  \"paymentMethod\": \"Visa\",\n  \"subtotal\": 8.78,\n  \"tax\": 0,\n  \"tip\": 0,\n  \"total\": 8.78,\n  \"transactionDate\": \"2026-05-27\",\n  \"transactionTime\": \"20:27\"\n}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 4622,
-      "completion_tokens": 1689,
-      "total_tokens": 6311,
+      "prompt_tokens": 4377,
+      "completion_tokens": 226,
+      "total_tokens": 4603,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 1536,
+        "reasoning_tokens": 0,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

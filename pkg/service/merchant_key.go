@@ -7,9 +7,12 @@ import (
 )
 
 // merchantSuffixRe strips common business suffixes so "DigitalOcean LLC" and
-// "DigitalOcean" produce the same dedup key. Mirrors the regex used in the
-// cleanup migration 000025.
-var merchantSuffixRe = regexp.MustCompile(`(?i)\s+(llc|inc\.?|corp\.?|ltd\.?|co\.?|llp|plc)$`)
+// "DigitalOcean" produce the same dedup key. The separator allows a comma
+// because the legal form is usually written "American Airlines, Inc." — matching
+// only whitespace left the comma behind and produced "american airlines,", which
+// never matched the bare name. Migration 000025 ran the whitespace-only version,
+// so rows cleaned by it may still carry a trailing comma.
+var merchantSuffixRe = regexp.MustCompile(`(?i)[,\s]\s*(llc|inc\.?|corp\.?|ltd\.?|co\.?|llp|plc)$`)
 
 // normalizeMerchantSuffix lower-cases, trims whitespace, and strips common
 // business suffixes. It is the regex-only fallback used when no alias entry

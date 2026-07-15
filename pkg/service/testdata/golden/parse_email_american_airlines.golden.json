@@ -1,16 +1,16 @@
 {
-  "request_sha256": "1e22c389976bbc00d5eae21633718cfdf19d2686bcb68927bace304c2a9185a2",
+  "request_sha256": "def6c7046e6ca6f9d02bb475485037cda1ceeb4c281d954cc32d53d490f42827",
   "response": {
-    "id": "chatcmpl-DlxOxG0luxsP24ccnB4dMzTxnuEGI",
+    "id": "chatcmpl-E1sIjB5jv6CvT2SbxAlniRC9Xpv2g",
     "object": "chat.completion",
-    "created": 1780322127,
+    "created": 1784115769,
     "model": "gpt-5-nano-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"\",\"lineItems\":[{\"description\":\"New ticket\",\"quantity\":1,\"totalPrice\":331.16,\"unitPrice\":331.16}],\"merchantAddress\":\"\",\"merchantName\":\"American Airlines\",\"paymentMethod\":\"Apple Pay\",\"subtotal\":331.16,\"tax\":40.24,\"tip\":0,\"total\":371.4,\"transactionDate\":\"2026-05-13\",\"transactionTime\":\"\"}",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":false,\"lastFourDigits\":\"\",\"lineItems\":[{\"description\":\"New ticket\",\"quantity\":1,\"totalPrice\":331.16,\"unitPrice\":331.16}],\"merchantAddress\":\"\",\"merchantName\":\"American Airlines, Inc.\",\"paymentMethod\":\"Apple Pay\",\"subtotal\":331.16,\"tax\":40.24,\"tip\":0,\"total\":371.40,\"transactionDate\":\"2026-05-13\",\"transactionTime\":\"\"}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 2237,
-      "completion_tokens": 2535,
-      "total_tokens": 4772,
+      "prompt_tokens": 2365,
+      "completion_tokens": 2990,
+      "total_tokens": 5355,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 2432,
+        "reasoning_tokens": 2880,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

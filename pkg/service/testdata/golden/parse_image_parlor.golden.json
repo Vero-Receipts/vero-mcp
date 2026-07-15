@@ -1,16 +1,16 @@
 {
-  "request_sha256": "626d97b9fecf6a137cda73ebb7d85a19c2a8445507bb2b144fa589347f79f7c4",
+  "request_sha256": "09d44fff48bccd183e2f6c1a985c722b89dd21dc7dd1f853ed3c9cec8cb2b0cc",
   "response": {
-    "id": "chatcmpl-DlxtKDk9LaCPwh5yao52ZuqKyvl6A",
+    "id": "chatcmpl-E1s7iJ4yK9MsIyhVh9eBQy31XsLcq",
     "object": "chat.completion",
-    "created": 1780324010,
-    "model": "gpt-5-nano-2025-08-07",
+    "created": 1784115086,
+    "model": "gpt-5-mini-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"currency\":\"USD\",\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"Sandy Beach\",\"quantity\":1,\"totalPrice\":3.95,\"unitPrice\":3.95}],\"merchantAddress\":\"500 Rep John Lewis Way S, Nashville, TN 37203\",\"merchantName\":\"Parlor Doughnuts\",\"paymentMethod\":\"Visa\",\"subtotal\":3.95,\"tax\":0.37,\"tip\":0,\"total\":4.32,\"transactionDate\":\"2026-05-30\",\"transactionTime\":\"09:55\"}",
+          "content": "{\n  \"currency\": \"USD\",\n  \"isSubscription\": false,\n  \"lastFourDigits\": \"2676\",\n  \"lineItems\": [\n    {\n      \"description\": \"Sandy Beach\",\n      \"quantity\": 1,\n      \"totalPrice\": 3.95,\n      \"unitPrice\": 3.95\n    }\n  ],\n  \"merchantAddress\": \"500 Rep John Lewis Way S, Nashville, TN 37203\",\n  \"merchantName\": \"Parlor Doughnuts\",\n  \"paymentMethod\": \"VISA\",\n  \"subtotal\": 3.95,\n  \"tax\": 0.37,\n  \"tip\": 0,\n  \"total\": 4.32,\n  \"transactionDate\": \"2026-05-30\",\n  \"transactionTime\": \"09:55\"\n}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 4622,
-      "completion_tokens": 1852,
-      "total_tokens": 6474,
+      "prompt_tokens": 4377,
+      "completion_tokens": 185,
+      "total_tokens": 4562,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 1728,
+        "reasoning_tokens": 0,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

@@ -1,0 +1,38 @@
+{
+  "request_sha256": "ef140b91feb2b95b5e0af0d79bb59c56f332cd17d2fb0f6273d2118a49a0543f",
+  "response": {
+    "id": "chatcmpl-E1s7ro9yHCrWhVIIdoqYKX3xEPSeT",
+    "object": "chat.completion",
+    "created": 1784115095,
+    "model": "gpt-5-mini-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\n  \"currency\": \"USD\",\n  \"isSubscription\": false,\n  \"lastFourDigits\": \"2676\",\n  \"lineItems\": [\n    {\n      \"description\": \"TURKEY CLUB WRAP\",\n      \"quantity\": 1,\n      \"totalPrice\": 5.49,\n      \"unitPrice\": 5.49\n    },\n    {\n      \"description\": \"PIZZA PARLANNO W/SAUSAGE\",\n      \"quantity\": 1,\n      \"totalPrice\": 5.49,\n      \"unitPrice\": 5.49\n    },\n    {\n      \"description\": \"MILK HALF GALLON WHOLE\",\n      \"quantity\": 1,\n      \"totalPrice\": 2.49,\n      \"unitPrice\": 2.49\n    },\n    {\n      \"description\": \"CP RED JUICE\",\n      \"quantity\": 2,\n      \"totalPrice\": 7.98,\n      \"unitPrice\": 3.99\n    },\n    {\n      \"description\": \"JELLY CONCORD GRAPE ORGA\",\n      \"quantity\": 1,\n      \"totalPrice\": 3.49,\n      \"unitPrice\": 3.49\n    },\n    {\n      \"description\": \"SPICE GROUND BLACK PEPPE\",\n      \"quantity\": 1,\n      \"totalPrice\": 2.29,\n      \"unitPrice\": 2.29\n    },\n    {\n      \"description\": \"YOGURT ORG VANILLA QUART\",\n      \"quantity\": 1,\n      \"totalPrice\": 3.99,\n      \"unitPrice\": 3.99\n    },\n    {\n      \"description\": \"R-SALAD BABY SPINACH ORG\",\n      \"quantity\": 1,\n      \"totalPrice\": 2.29,\n      \"unitPrice\": 2.29\n    },\n    {\n      \"description\": \"CP GREEN JUICE\",\n      \"quantity\": 1,\n      \"totalPrice\": 4.29,\n      \"unitPrice\": 4.29\n    },\n    {\n      \"description\": \"KMBCHA PNK LDY APLE HEAL\",\n      \"quantity\": 1,\n      \"totalPrice\": 3.49,\n      \"unitPrice\": 3.49\n    },\n    {\n      \"description\": \"Bottle Deposit\",\n      \"quantity\": 1,\n      \"totalPrice\": 0.10,\n      \"unitPrice\": 0.10\n    },\n    {\n      \"description\": \"R-RASPberries 12 OZ\",\n      \"quantity\": 1,\n      \"totalPrice\": 6.99,\n      \"unitPrice\": 6.99\n    },\n    {\n      \"description\": \"R-STRAWBERRIES 1 LB\",\n      \"quantity\": 1,\n      \"totalPrice\": 3.49,\n      \"unitPrice\": 3.49\n    },\n    {\n      \"description\": \"HOT DOG BUNS\",\n      \"quantity\": 1,\n      \"totalPrice\": 2.49,\n      \"unitPrice\": 2.49\n    },\n    {\n      \"description\": \"MULTIGRAIN BREAD\",\n      \"quantity\": 1,\n      \"totalPrice\": 2.99,\n      \"unitPrice\": 2.99\n    },\n    {\n      \"description\": \"PITA\",\n      \"quantity\": 1,\n      \"totalPrice\": 1.99,\n      \"unitPrice\": 1.99\n    },\n    {\n      \"description\": \"MANGO SOFT \u0026 JUICY\",\n      \"quantity\": 2,\n      \"totalPrice\": 4.98,\n      \"unitPrice\": 2.49\n    },\n    {\n      \"description\": \"SALMON FILLET SKIN ON\",\n      \"quantity\": 1,\n      \"totalPrice\": 10.79,\n      \"unitPrice\": 10.79\n    },\n    {\n      \"description\": \"PORK NAT CRATE FREE BNLS\",\n      \"quantity\": 1,\n      \"totalPrice\": 8.55,\n      \"unitPrice\": 8.55\n    },\n    {\n      \"description\": \"SAUSAGE CHICKEN UNEXPECT\",\n      \"quantity\": 2,\n      \"totalPrice\": 8.98,\n      \"unitPrice\": 4.49\n    },\n    {\n      \"description\": \"BANANA EACH\",\n      \"quantity\": 7,\n      \"totalPrice\": 1.61,\n      \"unitPrice\": 0.23\n    },\n    {\n      \"description\": \"FETA\",\n      \"quantity\": 1,\n      \"totalPrice\": 3.79,\n      \"unitPrice\": 3.79\n    },\n    {\n      \"description\": \"CREAMY MAC AND CHEESE\",\n      \"quantity\": 1,\n      \"totalPrice\": 4.99,\n      \"unitPrice\": 4.99\n    },\n    {\n      \"description\": \"T CANDLE TIN BEACH DAY\",\n      \"quantity\": 2,\n      \"totalPrice\": 7.98,\n      \"unitPrice\": 3.99\n    },\n    {\n      \"description\": \"SPICE CALIFORNIA ONION P\",\n      \"quantity\": 1,\n      \"totalPrice\": 1.99,\n      \"unitPrice\": 1.99\n    },\n    {\n      \"description\": \"A-GARLIC EACH\",\n      \"quantity\": 1,\n      \"totalPrice\": 0.49,\n      \"unitPrice\": 0.49\n    },\n    {\n      \"description\": \"PEANUT BUTTER CREAMY NO\",\n      \"quantity\": 1,\n      \"totalPrice\": 2.19,\n      \"unitPrice\": 2.19\n    },\n    {\n      \"description\": \"PESTO BASIL\",\n      \"quantity\": 1,\n      \"totalPrice\": 2.99,\n      \"unitPrice\": 2.99\n    },\n    {\n      \"description\": \"APPLE EACH HONEYCRISP\",\n      \"quantity\": 4,\n      \"totalPrice\": 7.16,\n      \"unitPrice\": 1.79\n    },\n    {\n      \"description\": \"A-TOMATOES CHERRY ON THE\",\n      \"quantity\": 1,\n      \"totalPrice\": 4.99,\n      \"unitPrice\": 4.99\n    },\n    {\n      \"description\": \"T ENRICH FACIAL MOISTURIZE\",\n      \"quantity\": 1,\n      \"totalPrice\": 4.49,\n      \"unitPrice\": 4.49\n    },\n    {\n      \"description\": \"KOMBUCHA GINGERADE GTS\",\n      \"quantity\": 1,\n      \"totalPrice\": 3.49,\n      \"unitPrice\": 3.49\n    },\n    {\n      \"description\": \"Bottle Deposit\",\n      \"quantity\": 1,\n      \"totalPrice\": 0.10,\n      \"unitPrice\": 0.10\n    }\n  ],\n  \"merchantAddress\": \"17028 Kercheval Avenue, Grosse Pointe, MI 48230\",\n  \"merchantName\": \"Trader Joe's\",\n  \"paymentMethod\": \"Visa\",\n  \"subtotal\": 0,\n  \"tax\": 0.75,\n  \"tip\": 0,\n  \"total\": 143.24,\n  \"transactionDate\": \"2026-07-12\",\n  \"transactionTime\": \"19:12\"\n}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 4377,
+      "completion_tokens": 1590,
+      "total_tokens": 5967,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}
