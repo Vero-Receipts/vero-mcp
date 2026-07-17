@@ -38,10 +38,12 @@ func NewOpenAIService(apiKey string) *OpenAIService {
 
 const maxRetries = 3
 
-// doRequest executes a single OpenAI chat-completions POST and retries on 429
+// DoRequest executes a single OpenAI chat-completions POST and retries on 429
 // (rate-limit) responses using the Retry-After header or exponential back-off.
 // It returns the raw response body on success (HTTP 200) and an error otherwise.
-func (s *OpenAIService) doRequest(ctx context.Context, bodyBytes []byte) ([]byte, error) {
+// Exported as a generic transport so dependents can issue their own chat-completions
+// requests (own prompt + json_schema) without duplicating the retry/auth plumbing.
+func (s *OpenAIService) DoRequest(ctx context.Context, bodyBytes []byte) ([]byte, error) {
 	var (
 		resp      *http.Response
 		respBytes []byte
@@ -164,7 +166,7 @@ func (s *OpenAIService) ParseImageData(ctx context.Context, imageBytes []byte, m
 		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
 	}
 
-	respBytes, err := s.doRequest(ctx, bodyBytes)
+	respBytes, err := s.DoRequest(ctx, bodyBytes)
 	if err != nil {
 		return &domain.OCRResult{Error: err.Error()}
 	}
@@ -465,7 +467,7 @@ func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contex
 		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
 	}
 
-	respBytes, err := s.doRequest(ctx, bodyBytes)
+	respBytes, err := s.DoRequest(ctx, bodyBytes)
 	if err != nil {
 		return &domain.OCRResult{Error: err.Error()}
 	}
@@ -670,7 +672,7 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	respBytes, err := s.doRequest(ctx, bodyBytes)
+	respBytes, err := s.DoRequest(ctx, bodyBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -776,7 +778,7 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	respBytes, err := s.doRequest(ctx, bodyBytes)
+	respBytes, err := s.DoRequest(ctx, bodyBytes)
 	if err != nil {
 		return nil, err
 	}
