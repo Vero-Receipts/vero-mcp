@@ -22,6 +22,7 @@ type PlaidService struct {
 	userRepo      repository.UserRepository
 	txCacheRepo   repository.TransactionCacheRepository
 	merchantRepo  repository.MerchantRepository
+	accountRepo   repository.PlaidAccountRepository // optional; nil = don't persist account masks
 	receiptSvc    *ReceiptService
 	encryptionKey string // optional; empty = no encryption (plain text tokens)
 	redirectURI   string
@@ -33,6 +34,7 @@ func NewPlaidService(
 	userRepo repository.UserRepository,
 	txCacheRepo repository.TransactionCacheRepository,
 	merchantRepo repository.MerchantRepository,
+	accountRepo repository.PlaidAccountRepository,
 	receiptSvc *ReceiptService,
 ) *PlaidService {
 	plaidEnv := plaid.Sandbox
@@ -51,6 +53,7 @@ func NewPlaidService(
 		userRepo:      userRepo,
 		txCacheRepo:   txCacheRepo,
 		merchantRepo:  merchantRepo,
+		accountRepo:   accountRepo,
 		receiptSvc:    receiptSvc,
 		encryptionKey: encryptionKey,
 		redirectURI:   redirectURI,
@@ -267,6 +270,9 @@ func (s *PlaidService) ExchangePublicToken(ctx context.Context, userID uuid.UUID
 		return "", fmt.Errorf("store plaid item: %w", err)
 	}
 
+	// Persist account masks for transaction↔Square matching. Best-effort.
+	s.syncAccounts(ctx, userID, itemID, accessToken)
+
 	// Mark the user as bank-connected in the users table.
 	if err := s.userRepo.SetBankConnected(ctx, userID, true); err != nil {
 		slog.Error("set bank connected flag", "error", err, "user_id", userID)
@@ -282,6 +288,38 @@ func (s *PlaidService) ExchangePublicToken(ctx context.Context, userID uuid.UUID
 	}()
 
 	return itemID, nil
+}
+
+// syncAccounts fetches the Item's accounts from Plaid and persists each with its
+// card mask, keyed by Plaid account_id. Best-effort and nil-safe: skipped when no
+// accountRepo is wired, and failures are logged rather than propagated so they
+// never break token exchange or transaction sync. The mask is the join key used
+// to match a user transaction to a Square payment's last4.
+func (s *PlaidService) syncAccounts(ctx context.Context, userID uuid.UUID, itemID, accessToken string) {
+	if s.accountRepo == nil {
+		return
+	}
+	req := plaid.NewAccountsGetRequest(accessToken)
+	resp, _, err := s.client.PlaidApi.AccountsGet(ctx).AccountsGetRequest(*req).Execute()
+	if err != nil {
+		slog.Error("plaid: accounts get for mask sync", "error", err, "item_id", itemID)
+		return
+	}
+	for _, acct := range resp.GetAccounts() {
+		a := &domain.PlaidAccount{
+			AccountID:    acct.GetAccountId(),
+			ItemID:       itemID,
+			UserID:       userID,
+			Mask:         acct.GetMask(),
+			Name:         acct.GetName(),
+			OfficialName: acct.GetOfficialName(),
+			Subtype:      string(acct.GetSubtype()),
+			Type:         string(acct.GetType()),
+		}
+		if err := s.accountRepo.Upsert(ctx, a); err != nil {
+			slog.Error("plaid: upsert account mask", "error", err, "account_id", a.AccountID, "item_id", itemID)
+		}
+	}
 }
 
 func (s *PlaidService) GetAccounts(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error) {
@@ -423,6 +461,10 @@ func (s *PlaidService) SyncTransactions(ctx context.Context, userID uuid.UUID, c
 		if syncCursor == "" {
 			syncCursor = item.SyncCursor
 		}
+
+		// Refresh account masks for this item (keeps last4 current and backfills
+		// items linked before mask persistence existed). Best-effort.
+		s.syncAccounts(ctx, userID, item.ItemID, accessToken)
 
 		// Paginate through all available transaction pages from Plaid.
 		for {

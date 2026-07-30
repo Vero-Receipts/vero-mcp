@@ -106,6 +106,7 @@ func main() {
 	// Repositories.
 	userRepo := repository.NewUserRepo(db, repository.DialectSQLite)
 	plaidItemRepo := repository.NewPlaidItemRepo(db, repository.DialectSQLite)
+	plaidAccountRepo := repository.NewPlaidAccountRepo(db, repository.DialectSQLite)
 	receiptRepo := repository.NewReceiptRepo(db, repository.DialectSQLite)
 	receiptMatchRepo := repository.NewReceiptMatchRepo(db, repository.DialectSQLite)
 	merchantRepo := repository.NewMerchantRepo(db, repository.DialectSQLite)
@@ -146,7 +147,7 @@ func main() {
 		cfg.PlaidClientID, cfg.PlaidSecret, cfg.PlaidEnv,
 		"", // redirectURI not needed for local Plaid Link
 		cfg.EncryptionKey,
-		plaidItemRepo, userRepo, txCacheRepo, merchantRepo, receiptSvc,
+		plaidItemRepo, userRepo, txCacheRepo, merchantRepo, plaidAccountRepo, receiptSvc,
 	)
 
 	// Web server (started lazily on first use).
