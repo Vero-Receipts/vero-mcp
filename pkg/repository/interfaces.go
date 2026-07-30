@@ -22,6 +22,14 @@ type PlaidItemRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
+// PlaidAccountRepository persists accounts (with card mask) fetched from
+// /accounts/get, keyed by Plaid account_id.
+type PlaidAccountRepository interface {
+	Upsert(ctx context.Context, a *domain.PlaidAccount) error
+	FindByAccountID(ctx context.Context, accountID string) (*domain.PlaidAccount, error)
+	FindByUserID(ctx context.Context, userID uuid.UUID) ([]domain.PlaidAccount, error)
+}
+
 type ReceiptRepository interface {
 	Create(ctx context.Context, receipt *domain.Receipt) error
 	FindByID(ctx context.Context, id uuid.UUID) (*domain.Receipt, error)
