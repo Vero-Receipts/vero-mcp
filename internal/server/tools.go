@@ -204,16 +204,22 @@ func RegisterTools(s *mcpserver.MCPServer, h *ToolHandlers) {
 				mcp.Required(),
 				mcp.Description("The UUID of the receipt whose suggestion to confirm"),
 			),
+			mcp.WithString("transaction_id",
+				mcp.Description("Which suggested transaction to confirm. Optional when the receipt has only one pending suggestion; required when it has several."),
+			),
 		),
 		h.ConfirmSuggestionHandler,
 	)
 
 	s.AddTool(
 		mcp.NewTool("reject_receipt_suggestion",
-			mcp.WithDescription("Rejects an auto-suggested receipt-to-transaction match. Use when the system suggested a match but the user says it's wrong."),
+			mcp.WithDescription("Rejects an auto-suggested receipt-to-transaction match. Use when the system suggested a match but the user says it's wrong. The rejection is permanent — that receipt is never suggested against that transaction again."),
 			mcp.WithString("receipt_id",
 				mcp.Required(),
 				mcp.Description("The UUID of the receipt whose suggestion to reject"),
+			),
+			mcp.WithString("transaction_id",
+				mcp.Description("Which suggested transaction to reject. Optional when the receipt has only one pending suggestion; required when it has several."),
 			),
 		),
 		h.RejectSuggestionHandler,

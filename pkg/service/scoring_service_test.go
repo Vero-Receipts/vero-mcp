@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func TestScoreAmount(t *testing.T) {
 		{"exactly_2pct", 2.0, false, false, 0.95},
 		{"just_above_2pct", 2.01, false, false, 0.85},
 		// Charge exceeds receipt (bank charged more than receipt — fees/surcharges applied after printing)
-		{"charge_exceeds_small", 3.0, false, true, 0.85},   // ≤5%: falls through to normal tier
+		{"charge_exceeds_small", 3.0, false, true, 0.85},    // ≤5%: falls through to normal tier
 		{"charge_exceeds_moderate", 8.0, false, true, 0.75}, // 5–20%: gentle penalty
 		{"charge_exceeds_large", 25.0, false, true, 0.55},   // 20–35%: heavier penalty, still visible
 		{"charge_exceeds_dropped", 40.0, false, true, 0.0},  // >35%: too large, DROP
@@ -271,4 +272,104 @@ func TestScoreCandidates(t *testing.T) {
 			t.Errorf("results not sorted descending: %.4f <= %.4f", got[0].CompositeScore, got[1].CompositeScore)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Unknown dimensions
+//
+// The scorer must distinguish "the receipt has no value here" from "the value
+// disagrees". A missing date in particular must never be stood in for by
+// today: that would score proximity against a date the receipt never carried,
+// inventing agreement or disagreement depending on when it happened to be
+// ingested.
+// ---------------------------------------------------------------------------
+
+func TestScoreCandidates_MissingDateIsUnknownNotToday(t *testing.T) {
+	svc := NewScoringService(nil)
+	total := 10.0
+	m := "Starbucks"
+	receipt := &domain.Receipt{Total: &total, MerchantName: &m} // no Date
+
+	// Dated far from today, so a today-substituting scorer would drop it.
+	tx := domain.Transaction{
+		TransactionID: "tx-1", Amount: 10.00, Date: "2020-01-15", Name: "STARBUCKS #123",
+	}
+
+	scored := svc.ScoreCandidates(context.Background(), receipt, []domain.Transaction{tx})
+	if len(scored) != 1 {
+		t.Fatalf("len(scored) = %d, want 1 (a missing date must not drop the candidate)", len(scored))
+	}
+	cs := scored[0]
+	if cs.DateKnown {
+		t.Error("DateKnown = true, want false")
+	}
+	if cs.DateScore != 0 {
+		t.Errorf("DateScore = %.2f, want 0 (unscored, and meaningless while DateKnown is false)", cs.DateScore)
+	}
+	if !cs.AmountKnown || !cs.MerchantKnown {
+		t.Error("expected amount and merchant to be known")
+	}
+	// Composite renormalizes over amount+merchant only; including a zero date
+	// score would have dragged it down to ~0.75.
+	want := (cs.AmountScore*domain.WeightAmount + cs.MerchantScore*domain.WeightMerchant) /
+		(domain.WeightAmount + domain.WeightMerchant)
+	if math.Abs(cs.CompositeScore-want) > 1e-9 {
+		t.Errorf("CompositeScore = %.4f, want %.4f (renormalized over known dimensions)", cs.CompositeScore, want)
+	}
+}
+
+func TestScoreCandidates_MissingTotalIsUnknown(t *testing.T) {
+	svc := NewScoringService(nil)
+	d := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
+	m := "Starbucks"
+	receipt := &domain.Receipt{Date: &d, MerchantName: &m} // no Total
+
+	tx := domain.Transaction{
+		TransactionID: "tx-1", Amount: 42.00, Date: "2025-03-15", Name: "STARBUCKS #123",
+	}
+
+	scored := svc.ScoreCandidates(context.Background(), receipt, []domain.Transaction{tx})
+	if len(scored) != 1 {
+		t.Fatalf("len(scored) = %d, want 1 (an unreadable total must not drop the candidate)", len(scored))
+	}
+	cs := scored[0]
+	if cs.AmountKnown {
+		t.Error("AmountKnown = true, want false")
+	}
+	if cs.AmountDiffPct != 0 {
+		t.Errorf("AmountDiffPct = %.2f, want 0 (nothing to compare against)", cs.AmountDiffPct)
+	}
+	if !cs.DateKnown || !cs.MerchantKnown {
+		t.Error("expected date and merchant to be known")
+	}
+}
+
+func TestScoreCandidates_NeitherAmountNorDate_ScoresNothing(t *testing.T) {
+	svc := NewScoringService(nil)
+	m := "Starbucks"
+	receipt := &domain.Receipt{MerchantName: &m}
+
+	tx := domain.Transaction{
+		TransactionID: "tx-1", Amount: 10.00, Date: "2025-03-15", Name: "STARBUCKS #123",
+	}
+
+	if scored := svc.ScoreCandidates(context.Background(), receipt, []domain.Transaction{tx}); len(scored) != 0 {
+		t.Errorf("len(scored) = %d, want 0 — merchant alone cannot rank candidates", len(scored))
+	}
+}
+
+func TestScoreCandidates_ContradictingDimensionsStillDrop(t *testing.T) {
+	svc := NewScoringService(nil)
+	receipt := testReceipt("Starbucks", 100.00)
+
+	candidates := []domain.Transaction{
+		// Amount 40% off — beyond the cliff.
+		{TransactionID: "tx-amount", Amount: 60.00, Date: "2025-03-15", Name: "STARBUCKS #123"},
+		// Date 12 days off — beyond the cliff.
+		{TransactionID: "tx-date", Amount: 100.00, Date: "2025-03-27", Name: "STARBUCKS #123"},
+	}
+
+	if scored := svc.ScoreCandidates(context.Background(), receipt, candidates); len(scored) != 0 {
+		t.Errorf("len(scored) = %d, want 0 — a known dimension past its cliff is a veto", len(scored))
+	}
 }

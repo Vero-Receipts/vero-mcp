@@ -55,6 +55,21 @@ type ReceiptMatchRepository interface {
 	DeleteByReceiptID(ctx context.Context, receiptID uuid.UUID) error
 }
 
+// ReceiptMatchSuggestionRepository stores proposed receipt↔transaction links
+// awaiting a user decision. Unlike ReceiptMatchRepository these are
+// non-exclusive, and a rejected pair is retained rather than deleted so the
+// matcher never proposes it again.
+type ReceiptMatchSuggestionRepository interface {
+	ReplaceForReceipt(ctx context.Context, receiptID uuid.UUID, suggestions []domain.ReceiptMatchSuggestion) error
+	FindByReceiptID(ctx context.Context, receiptID uuid.UUID) ([]domain.ReceiptMatchSuggestion, error)
+	FindByTransactionID(ctx context.Context, txID string) ([]domain.ReceiptMatchSuggestion, error)
+	FindPair(ctx context.Context, receiptID uuid.UUID, txID string) (*domain.ReceiptMatchSuggestion, error)
+	MarkRejected(ctx context.Context, receiptID uuid.UUID, txID string) error
+	DeleteForReceipt(ctx context.Context, receiptID uuid.UUID) error
+	DeleteForTransaction(ctx context.Context, txID string) error
+	CountPendingByUser(ctx context.Context, userID uuid.UUID) (int, error)
+}
+
 type TransactionCacheRepository interface {
 	UpsertBatch(ctx context.Context, userID uuid.UUID, txs []domain.Transaction) (int, error)
 	FindByUserID(ctx context.Context, userID uuid.UUID) ([]domain.Transaction, error)
@@ -62,7 +77,9 @@ type TransactionCacheRepository interface {
 	FindUnmatchedCandidates(ctx context.Context, userID uuid.UUID, amount float64, dateStr string) ([]domain.Transaction, error)
 	FindAllUnmatched(ctx context.Context, userID uuid.UUID) ([]domain.Transaction, error)
 	FindUnmatchedByDateRange(ctx context.Context, userID uuid.UUID, dateStr string) ([]domain.Transaction, error)
-	FindUnmatchedTight(ctx context.Context, userID uuid.UUID, amount float64, dateStr string, isFX bool) ([]domain.Transaction, error)
+	FindUnmatchedTight(ctx context.Context, userID, receiptID uuid.UUID, amount float64, dateStr string, isFX bool) ([]domain.Transaction, error)
+	FindUnmatchedByDateOnly(ctx context.Context, userID, receiptID uuid.UUID, dateStr string) ([]domain.Transaction, error)
+	FindUnmatchedByAmountOnly(ctx context.Context, userID, receiptID uuid.UUID, amount float64, ingestedAt time.Time, isFX bool) ([]domain.Transaction, error)
 	RemoveBatch(ctx context.Context, transactionIDs []string) error
 	SearchUnmatched(ctx context.Context, userID uuid.UUID, search string) ([]domain.Transaction, error)
 	FindByTransactionID(ctx context.Context, transactionID string) (*domain.Transaction, error)
@@ -132,4 +149,3 @@ type LabelAssignmentRepository interface {
 	Unassign(ctx context.Context, labelID uuid.UUID, entityType, entityID string) error
 	FindByEntity(ctx context.Context, userID uuid.UUID, entityType, entityID string) ([]domain.Label, error)
 }
-

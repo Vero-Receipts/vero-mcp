@@ -636,8 +636,22 @@ func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch,
 // --- filter / order helpers (squirrel) ---
 
 func applyReceiptFiltersSQ(qb sq.SelectBuilder, f domain.ReceiptFilter, prefix string) sq.SelectBuilder {
-	if f.Status != "" {
-		qb = qb.Where(sq.Eq{prefix + "status": f.Status})
+	// "suggested" is no longer a stored status — carrying proposals is a
+	// separate axis now. Older clients still ask for it by status, so it
+	// aliases onto the proposal filter instead of matching nothing.
+	hasSuggestions := f.HasSuggestions
+	status := f.Status
+	if status == "suggested" {
+		hasSuggestions, status = true, ""
+	}
+
+	if hasSuggestions {
+		qb = qb.Where(`EXISTS (
+			SELECT 1 FROM receipt_match_suggestions s
+			WHERE s.receipt_id = ` + prefix + `id AND s.rejected_at IS NULL)`)
+	}
+	if status != "" {
+		qb = qb.Where(sq.Eq{prefix + "status": status})
 	}
 	if f.Source != "" {
 		qb = qb.Where(sq.Eq{prefix + "source": f.Source})

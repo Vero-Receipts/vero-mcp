@@ -45,8 +45,14 @@ func (m *mockAuditRepo) Create(_ context.Context, e *domain.MatchAuditEntry) err
 	return nil
 }
 
-// stubTxCacheRepo satisfies TransactionCacheRepository with no-op methods.
-type stubTxCacheRepo struct{}
+// stubTxCacheRepo satisfies TransactionCacheRepository with no-op methods. The
+// three candidate-query fields let a test choose which recall path it is
+// exercising: MatchReceipt picks one based on what the receipt carries.
+type stubTxCacheRepo struct {
+	tight    []domain.Transaction
+	byDate   []domain.Transaction
+	byAmount []domain.Transaction
+}
 
 func (s *stubTxCacheRepo) UpsertBatch(_ context.Context, _ uuid.UUID, _ []domain.Transaction) (int, error) {
 	return 0, nil
@@ -66,8 +72,14 @@ func (s *stubTxCacheRepo) FindAllUnmatched(_ context.Context, _ uuid.UUID) ([]do
 func (s *stubTxCacheRepo) FindUnmatchedByDateRange(_ context.Context, _ uuid.UUID, _ string) ([]domain.Transaction, error) {
 	return nil, nil
 }
-func (s *stubTxCacheRepo) FindUnmatchedTight(_ context.Context, _ uuid.UUID, _ float64, _ string, _ bool) ([]domain.Transaction, error) {
-	return nil, nil
+func (s *stubTxCacheRepo) FindUnmatchedTight(_ context.Context, _, _ uuid.UUID, _ float64, _ string, _ bool) ([]domain.Transaction, error) {
+	return s.tight, nil
+}
+func (s *stubTxCacheRepo) FindUnmatchedByDateOnly(_ context.Context, _, _ uuid.UUID, _ string) ([]domain.Transaction, error) {
+	return s.byDate, nil
+}
+func (s *stubTxCacheRepo) FindUnmatchedByAmountOnly(_ context.Context, _, _ uuid.UUID, _ float64, _ time.Time, _ bool) ([]domain.Transaction, error) {
+	return s.byAmount, nil
 }
 func (s *stubTxCacheRepo) RemoveBatch(_ context.Context, _ []string) error { return nil }
 func (s *stubTxCacheRepo) SearchUnmatched(_ context.Context, _ uuid.UUID, _ string) ([]domain.Transaction, error) {
@@ -90,6 +102,11 @@ func (s *stubTxCacheRepo) SetRecurring(_ context.Context, _ []string) error { re
 
 func makeMatchingService(t *testing.T, ts *httptest.Server, audit *mockAuditRepo, alias *mockAliasRepo) *MatchingService {
 	t.Helper()
+	return makeMatchingServiceWithTxRepo(t, ts, audit, alias, &stubTxCacheRepo{})
+}
+
+func makeMatchingServiceWithTxRepo(t *testing.T, ts *httptest.Server, audit *mockAuditRepo, alias *mockAliasRepo, txRepo *stubTxCacheRepo) *MatchingService {
+	t.Helper()
 	var openAISvc *OpenAIService
 	if ts != nil {
 		openAISvc = newTestOpenAIService("test-key", ts)
@@ -97,7 +114,7 @@ func makeMatchingService(t *testing.T, ts *httptest.Server, audit *mockAuditRepo
 		openAISvc = NewOpenAIService("test-key")
 	}
 	scoringSvc := NewScoringService(alias)
-	return NewMatchingService(&stubTxCacheRepo{}, alias, audit, scoringSvc, openAISvc)
+	return NewMatchingService(txRepo, alias, audit, scoringSvc, openAISvc)
 }
 
 func testReceipt(merchantName string, total float64) *domain.Receipt {
@@ -120,17 +137,24 @@ func testTransaction(txID string, amount float64, name string) *domain.Transacti
 	}
 }
 
+// testScores builds a fully-populated candidate — all three dimensions present
+// and readable. Tests covering an unreadable dimension clear the matching
+// *Known flag afterwards.
 func testScores(merchantScore, amountScore, dateScore float64, method string, amtDiffPct float64, dateDiffDays int) *domain.CandidateScores {
-	return &domain.CandidateScores{
+	cs := &domain.CandidateScores{
 		TransactionID:  "tx-test",
 		MerchantScore:  merchantScore,
 		MerchantMethod: method,
 		AmountScore:    amountScore,
 		DateScore:      dateScore,
-		CompositeScore: merchantScore*0.40 + amountScore*0.35 + dateScore*0.25,
 		AmountDiffPct:  amtDiffPct,
 		DateDiffDays:   dateDiffDays,
+		AmountKnown:    true,
+		DateKnown:      true,
+		MerchantKnown:  true,
 	}
+	cs.CompositeScore = cs.Composite()
+	return cs
 }
 
 func disambiguateServer(t *testing.T, result MerchantDisambiguationResult) *httptest.Server {
@@ -263,14 +287,26 @@ func TestEvaluateCandidate_LLMRejects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != nil {
-		t.Errorf("expected nil result when LLM rejects, got %+v", result)
+	// An LLM "different businesses" verdict settles the merchant dimension as
+	// disagreeing — it does not kill the candidate. Amount and date both hold,
+	// so this still reaches the user as a proposal to accept or dismiss.
+	if result == nil {
+		t.Fatal("expected a suggestion: merchant disagrees but amount and date are strong")
+	}
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
+	}
+	if result.Flag != domain.FlagMerchantMismatch {
+		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagMerchantMismatch)
+	}
+	if result.Confidence > 0.75 {
+		t.Errorf("Confidence = %.4f, want <= 0.75 (capped for unconfirmed merchant)", result.Confidence)
 	}
 	if len(audit.entries) == 0 {
-		t.Fatal("expected audit entry for rejection")
+		t.Fatal("expected audit entry")
 	}
-	if audit.entries[0].Outcome != "rejected" {
-		t.Errorf("audit Outcome = %q, want \"rejected\"", audit.entries[0].Outcome)
+	if audit.entries[0].Outcome != "suggested" {
+		t.Errorf("audit Outcome = %q, want \"suggested\"", audit.entries[0].Outcome)
 	}
 	if !strings.Contains(audit.entries[0].Reason, "LLM rejected") {
 		t.Errorf("audit Reason = %q, want to contain \"LLM rejected\"", audit.entries[0].Reason)
@@ -290,14 +326,19 @@ func TestEvaluateCandidate_LowMerchantScore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != nil {
-		t.Errorf("expected nil result for low merchant score, got %+v", result)
+	// Merchant scoring too low to even be worth an LLM call is still only the
+	// merchant dimension disagreeing. Amount and date carry it to a suggestion.
+	if result == nil {
+		t.Fatal("expected a suggestion: merchant is weak but amount and date are strong")
 	}
-	if len(audit.entries) == 0 {
-		t.Fatal("expected audit entry for rejection")
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
 	}
-	if !strings.Contains(audit.entries[0].Reason, "merchant score too low") {
-		t.Errorf("audit Reason = %q, want to contain \"merchant score too low\"", audit.entries[0].Reason)
+	if result.Flag != domain.FlagMerchantMismatch {
+		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagMerchantMismatch)
+	}
+	if result.LLMUsed {
+		t.Error("expected no LLM call for a merchant score below the disambiguation band")
 	}
 }
 
@@ -305,7 +346,7 @@ func TestEvaluateCandidate_MissingMerchantNames(t *testing.T) {
 	audit := &mockAuditRepo{}
 	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
 
-	// Receipt has no merchant name — LLM can't disambiguate.
+	// Receipt has no merchant name — there is nothing for the LLM to compare.
 	total := 10.0
 	d := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
 	receipt := &domain.Receipt{Total: &total, Date: &d}
@@ -313,19 +354,23 @@ func TestEvaluateCandidate_MissingMerchantNames(t *testing.T) {
 	tx := testTransaction("tx-1", 10.00, "STARBUCKS")
 	cs := testScores(0.45, 0.85, 1.0, "word_overlap_1", 0.0, 0)
 	cs.TransactionID = "tx-1"
+	cs.MerchantKnown = false
 
 	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != nil {
-		t.Errorf("expected nil result when merchant names missing, got %+v", result)
+	if result == nil {
+		t.Fatal("expected a suggestion: merchant is unreadable but amount and date are strong")
 	}
-	if len(audit.entries) == 0 {
-		t.Fatal("expected audit entry")
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
 	}
-	if !strings.Contains(audit.entries[0].Reason, "missing merchant names") {
-		t.Errorf("audit Reason = %q, want to contain \"missing merchant names\"", audit.entries[0].Reason)
+	if result.Flag != domain.FlagNoMerchant {
+		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagNoMerchant)
+	}
+	if result.LLMUsed {
+		t.Error("expected no LLM call when the receipt carries no merchant name")
 	}
 }
 
@@ -380,14 +425,19 @@ func TestEvaluateCandidate_LLMError_WeakReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// Merchant unconfirmed, amount only tolerable, date only tolerable — no two
+	// dimensions agree strongly, so there is nothing worth asking the user about.
 	if result != nil {
 		t.Errorf("expected nil result (LLM error, weak signals), got %+v", result)
 	}
 	if len(audit.entries) == 0 {
 		t.Fatal("expected audit entry for rejection")
 	}
-	if !strings.Contains(audit.entries[0].Reason, "LLM error") {
-		t.Errorf("audit Reason = %q, want to contain \"LLM error\"", audit.entries[0].Reason)
+	if audit.entries[0].Outcome != "rejected" {
+		t.Errorf("audit Outcome = %q, want \"rejected\"", audit.entries[0].Outcome)
+	}
+	if !strings.Contains(audit.entries[0].Reason, "too few agreeing dimensions") {
+		t.Errorf("audit Reason = %q, want to contain \"too few agreeing dimensions\"", audit.entries[0].Reason)
 	}
 }
 
@@ -468,9 +518,9 @@ func TestEvaluateCandidate_NoMerchant_StrictMatch(t *testing.T) {
 
 	receipt := testReceiptNoMerchant(10.00)
 	tx := testTransaction("tx-1", 10.00, "SOME STORE")
-	// AmountScore=1.0 (exact), DateScore=1.0 (same day) — passes the strict threshold.
 	cs := testScores(0, 1.0, 1.0, "none", 0.0, 0)
 	cs.TransactionID = "tx-1"
+	cs.MerchantKnown = false
 
 	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
 	if err != nil {
@@ -482,41 +532,90 @@ func TestEvaluateCandidate_NoMerchant_StrictMatch(t *testing.T) {
 	if result.MatchType != "suggested" {
 		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
 	}
-	if result.Flag != "no_merchant" {
-		t.Errorf("Flag = %q, want \"no_merchant\"", result.Flag)
+	if result.Flag != domain.FlagNoMerchant {
+		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagNoMerchant)
 	}
 	if result.Confidence > 0.75 {
 		t.Errorf("Confidence = %.4f, want <= 0.75 (capped for unconfirmed merchant)", result.Confidence)
 	}
 }
 
-func TestEvaluateCandidate_NoMerchant_AmountTooLoose(t *testing.T) {
+// ---------------------------------------------------------------------------
+// The decide table: which single dimension may be absent or disagreeing.
+//
+// Merchant is forgiven in any state. Amount and date may be absent — an
+// unreadable total or date is a fact about the receipt, not evidence against
+// the candidate — but a known one that disagrees badly is a veto, because
+// there is no reading under which a $40 charge settles a $100 receipt.
+// ---------------------------------------------------------------------------
+
+func TestEvaluateCandidate_NoAmount_MerchantAndDateStrong(t *testing.T) {
 	audit := &mockAuditRepo{}
 	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
 
-	receipt := testReceiptNoMerchant(10.00)
-	tx := testTransaction("tx-1", 10.00, "SOME STORE")
-	// AmountScore=0.85 (≤5% diff) — below the 0.95 threshold for no-merchant path.
-	cs := testScores(0, 0.85, 1.0, "none", 3.0, 0)
+	// Total unreadable (faded thermal print), merchant and date crisp.
+	d := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
+	m := "Starbucks"
+	receipt := &domain.Receipt{Date: &d, MerchantName: &m}
+
+	tx := testTransaction("tx-1", 10.00, "STARBUCKS #123")
+	cs := testScores(0.90, 0, 1.0, "exact", 0, 0)
 	cs.TransactionID = "tx-1"
+	cs.AmountKnown = false
+	cs.CompositeScore = cs.Composite()
 
 	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != nil {
-		t.Errorf("expected nil result when amount score %.2f is below 0.95 with no merchant", cs.AmountScore)
+	if result == nil {
+		t.Fatal("expected a suggestion: amount is unreadable but merchant and date are strong")
+	}
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\" (an unreadable total must never auto-match)", result.MatchType)
+	}
+	if result.Flag != domain.FlagNoAmount {
+		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagNoAmount)
 	}
 }
 
-func TestEvaluateCandidate_NoMerchant_DateTooLoose(t *testing.T) {
+func TestEvaluateCandidate_NoDate_MerchantAndAmountStrong(t *testing.T) {
 	audit := &mockAuditRepo{}
 	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
 
-	receipt := testReceiptNoMerchant(10.00)
-	tx := testTransaction("tx-1", 10.00, "SOME STORE")
-	// DateScore=0.85 (2 days off) — below the 0.95 threshold for no-merchant path.
-	cs := testScores(0, 1.0, 0.85, "none", 0.0, 2)
+	total := 10.0
+	m := "Starbucks"
+	receipt := &domain.Receipt{Total: &total, MerchantName: &m}
+
+	tx := testTransaction("tx-1", 10.00, "STARBUCKS #123")
+	cs := testScores(0.90, 1.0, 0, "exact", 0.0, 0)
+	cs.TransactionID = "tx-1"
+	cs.DateKnown = false
+	cs.CompositeScore = cs.Composite()
+
+	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected a suggestion: date is unreadable but merchant and amount are strong")
+	}
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\" (an unreadable date must never auto-match)", result.MatchType)
+	}
+	if result.Flag != domain.FlagNoDate {
+		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagNoDate)
+	}
+}
+
+func TestEvaluateCandidate_Veto_AmountFarOff(t *testing.T) {
+	audit := &mockAuditRepo{}
+	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
+
+	receipt := testReceipt("Starbucks", 10.00)
+	tx := testTransaction("tx-1", 8.20, "STARBUCKS #123")
+	// Merchant exact and same day, but the charge is 18% off the receipt total.
+	cs := testScores(0.90, 0.40, 1.0, "exact", 18.0, 0)
 	cs.TransactionID = "tx-1"
 
 	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
@@ -524,6 +623,251 @@ func TestEvaluateCandidate_NoMerchant_DateTooLoose(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result != nil {
-		t.Errorf("expected nil result when date score %.2f is below 0.95 with no merchant", cs.DateScore)
+		t.Errorf("expected nil: a known amount this far off is a veto, not a suggestion; got %+v", result)
+	}
+}
+
+func TestEvaluateCandidate_Veto_DateFarOff(t *testing.T) {
+	audit := &mockAuditRepo{}
+	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
+
+	receipt := testReceipt("Starbucks", 10.00)
+	tx := testTransaction("tx-1", 10.00, "STARBUCKS #123")
+	// Merchant exact and amount exact, but the receipt is dated well outside
+	// the window. scoreDate would have dropped this in the scorer; assert the
+	// decision layer refuses it too, so neither path can leak it through.
+	cs := testScores(0.90, 1.0, 0.20, "exact", 0.0, 9)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil: a known date this far off is a veto, not a suggestion; got %+v", result)
+	}
+}
+
+func TestEvaluateCandidate_TwoDimensionsMissingOrWeak_Rejected(t *testing.T) {
+	audit := &mockAuditRepo{}
+	svc := makeMatchingService(t, nil, audit, &mockAliasRepo{})
+
+	total := 10.0
+	m := "Starbucks"
+	receipt := &domain.Receipt{Total: &total, MerchantName: &m}
+
+	tx := testTransaction("tx-1", 10.00, "SOME OTHER STORE")
+	// No date, and the merchant does not resolve either — only one dimension
+	// left standing, which is never enough.
+	cs := testScores(0.20, 1.0, 0, "none", 0.0, 0)
+	cs.TransactionID = "tx-1"
+	cs.DateKnown = false
+	cs.CompositeScore = cs.Composite()
+
+	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil when only one dimension agrees, got %+v", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MatchReceipt: the full pipeline — candidate recall, ranking, and how an
+// auto-match relates to the suggestions around it.
+// ---------------------------------------------------------------------------
+
+func matchReceiptSvc(t *testing.T, txRepo *stubTxCacheRepo) *MatchingService {
+	t.Helper()
+	return makeMatchingServiceWithTxRepo(t, nil, &mockAuditRepo{}, &mockAliasRepo{}, txRepo)
+}
+
+func TestMatchReceipt_AutoMatchShortCircuits(t *testing.T) {
+	txRepo := &stubTxCacheRepo{tight: []domain.Transaction{
+		*testTransaction("tx-exact", 10.00, "STARBUCKS #123"),
+		*testTransaction("tx-other", 10.20, "STARBUCKS #999"),
+	}}
+	svc := matchReceiptSvc(t, txRepo)
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), testReceipt("Starbucks", 10.00))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome == nil || outcome.Auto == nil {
+		t.Fatalf("expected an auto-match, got %+v", outcome)
+	}
+	if outcome.Auto.TransactionID != "tx-exact" {
+		t.Errorf("Auto.TransactionID = %q, want \"tx-exact\"", outcome.Auto.TransactionID)
+	}
+	// A settled link makes alternatives noise, not choice.
+	if len(outcome.Suggestions) != 0 {
+		t.Errorf("expected no suggestions alongside an auto-match, got %d", len(outcome.Suggestions))
+	}
+}
+
+func TestMatchReceipt_RanksMultipleSuggestions(t *testing.T) {
+	// Three same-day, same-amount charges at merchants that do not resolve to
+	// the receipt's. None can auto-match; all three are worth asking about.
+	txRepo := &stubTxCacheRepo{tight: []domain.Transaction{
+		*testTransaction("tx-a", 10.00, "UNRELATED ALPHA"),
+		*testTransaction("tx-b", 10.00, "UNRELATED BETA"),
+		*testTransaction("tx-c", 10.00, "UNRELATED GAMMA"),
+	}}
+	svc := matchReceiptSvc(t, txRepo)
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), testReceipt("Starbucks", 10.00))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected suggestions, got nil outcome")
+	}
+	if outcome.Auto != nil {
+		t.Errorf("expected no auto-match when merchant never resolves, got %+v", outcome.Auto)
+	}
+	if len(outcome.Suggestions) != 3 {
+		t.Fatalf("len(Suggestions) = %d, want 3", len(outcome.Suggestions))
+	}
+	for i, s := range outcome.Suggestions {
+		if s.MatchType != "suggested" {
+			t.Errorf("Suggestions[%d].MatchType = %q, want \"suggested\"", i, s.MatchType)
+		}
+		if s.Flag != domain.FlagMerchantMismatch {
+			t.Errorf("Suggestions[%d].Flag = %q, want %q", i, s.Flag, domain.FlagMerchantMismatch)
+		}
+		if i > 0 && outcome.Suggestions[i-1].Confidence < s.Confidence {
+			t.Errorf("suggestions not ranked: [%d]=%.4f before [%d]=%.4f",
+				i-1, outcome.Suggestions[i-1].Confidence, i, s.Confidence)
+		}
+	}
+}
+
+func TestMatchReceipt_CapsSuggestions(t *testing.T) {
+	var candidates []domain.Transaction
+	for i := 0; i < 6; i++ {
+		candidates = append(candidates, *testTransaction(
+			"tx-"+string(rune('a'+i)), 10.00, "UNRELATED STORE "+string(rune('A'+i))))
+	}
+	svc := matchReceiptSvc(t, &stubTxCacheRepo{tight: candidates})
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), testReceipt("Starbucks", 10.00))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected suggestions, got nil outcome")
+	}
+	if len(outcome.Suggestions) != maxSuggestions {
+		t.Errorf("len(Suggestions) = %d, want %d", len(outcome.Suggestions), maxSuggestions)
+	}
+}
+
+func TestMatchReceipt_NoAmount_UsesDateAnchoredRecall(t *testing.T) {
+	txRepo := &stubTxCacheRepo{
+		tight:  []domain.Transaction{*testTransaction("tx-wrong", 10.00, "STARBUCKS")},
+		byDate: []domain.Transaction{*testTransaction("tx-right", 42.00, "STARBUCKS #123")},
+	}
+	svc := matchReceiptSvc(t, txRepo)
+
+	d := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
+	m := "Starbucks"
+	receipt := &domain.Receipt{Date: &d, MerchantName: &m}
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), receipt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome == nil || len(outcome.Suggestions) == 0 {
+		t.Fatalf("expected a suggestion from the date-anchored query, got %+v", outcome)
+	}
+	if outcome.Auto != nil {
+		t.Error("a receipt with no readable total must never auto-match")
+	}
+	if got := outcome.Suggestions[0].TransactionID; got != "tx-right" {
+		t.Errorf("TransactionID = %q, want \"tx-right\" (amount-anchored query must not be used)", got)
+	}
+	if outcome.Suggestions[0].Flag != domain.FlagNoAmount {
+		t.Errorf("Flag = %q, want %q", outcome.Suggestions[0].Flag, domain.FlagNoAmount)
+	}
+}
+
+func TestMatchReceipt_NoDate_UsesAmountAnchoredRecall(t *testing.T) {
+	txRepo := &stubTxCacheRepo{
+		tight:    []domain.Transaction{*testTransaction("tx-wrong", 10.00, "STARBUCKS")},
+		byAmount: []domain.Transaction{*testTransaction("tx-right", 10.00, "STARBUCKS #123")},
+	}
+	svc := matchReceiptSvc(t, txRepo)
+
+	total := 10.0
+	m := "Starbucks"
+	receipt := &domain.Receipt{Total: &total, MerchantName: &m, CreatedAt: time.Now()}
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), receipt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome == nil || len(outcome.Suggestions) == 0 {
+		t.Fatalf("expected a suggestion from the amount-anchored query, got %+v", outcome)
+	}
+	if outcome.Auto != nil {
+		t.Error("a receipt with no readable date must never auto-match")
+	}
+	if got := outcome.Suggestions[0].TransactionID; got != "tx-right" {
+		t.Errorf("TransactionID = %q, want \"tx-right\"", got)
+	}
+	if outcome.Suggestions[0].Flag != domain.FlagNoDate {
+		t.Errorf("Flag = %q, want %q", outcome.Suggestions[0].Flag, domain.FlagNoDate)
+	}
+}
+
+func TestMatchReceipt_NoAmountNoDate_SkipsEntirely(t *testing.T) {
+	txRepo := &stubTxCacheRepo{
+		tight:    []domain.Transaction{*testTransaction("tx-a", 10.00, "STARBUCKS")},
+		byDate:   []domain.Transaction{*testTransaction("tx-b", 10.00, "STARBUCKS")},
+		byAmount: []domain.Transaction{*testTransaction("tx-c", 10.00, "STARBUCKS")},
+	}
+	svc := matchReceiptSvc(t, txRepo)
+
+	m := "Starbucks"
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), &domain.Receipt{MerchantName: &m})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// A merchant name alone anchors nothing — every charge at that merchant
+	// would score identically.
+	if outcome != nil {
+		t.Errorf("expected nil outcome with neither amount nor date, got %+v", outcome)
+	}
+}
+
+func TestMatchReceipt_AmountFarOff_YieldsNothing(t *testing.T) {
+	// Merchant exact, same day, but the only candidate is 40% off. The scorer
+	// vetoes it and the receipt is left alone rather than badly suggested.
+	txRepo := &stubTxCacheRepo{tight: []domain.Transaction{
+		*testTransaction("tx-far", 6.00, "STARBUCKS #123"),
+	}}
+	svc := matchReceiptSvc(t, txRepo)
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), testReceipt("Starbucks", 10.00))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome != nil {
+		t.Errorf("expected nil outcome for a 40%% amount gap, got %+v", outcome)
+	}
+}
+
+func TestMatchReceipt_DateFarOff_YieldsNothing(t *testing.T) {
+	tx := testTransaction("tx-far", 10.00, "STARBUCKS #123")
+	tx.Date = "2025-03-27" // 12 days from the receipt date
+	svc := matchReceiptSvc(t, &stubTxCacheRepo{tight: []domain.Transaction{*tx}})
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), testReceipt("Starbucks", 10.00))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome != nil {
+		t.Errorf("expected nil outcome for a 12-day date gap, got %+v", outcome)
 	}
 }
