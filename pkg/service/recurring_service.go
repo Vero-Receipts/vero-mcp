@@ -65,7 +65,7 @@ type SeriesReport struct {
 	Cadence       string     // frequency bucket name, or "irregular"
 	SourceReceipt *uuid.UUID // earliest real (non-derived) receipt in the series, if any
 	SourceIsSub   *bool      // that receipt's is_subscription (nil = not yet evaluated)
-	Established    bool       // qualifies to be marked recurring now, with known data
+	Established   bool       // qualifies to be marked recurring now, with known data
 	// NeedsOCR is true for a not-yet-established (2-occurrence) series whose source receipt's
 	// subscription flag is unknown — OCR decides whether it establishes. A ≥3-occurrence series
 	// is established by pattern alone and never needs OCR.
@@ -254,6 +254,14 @@ func (s *ReceiptService) PropagateRecurring(ctx context.Context, userID uuid.UUI
 		}
 		if err := s.matchRepo.Create(ctx, m); err != nil {
 			slog.Error("recurring: create derived match", "error", err, "transaction_id", t.TransactionID)
+			continue
+		}
+		// The transaction now carries line items, so nothing should still be
+		// proposing a receipt for it.
+		if s.suggestionRepo != nil {
+			if err := s.suggestionRepo.DeleteForTransaction(ctx, t.TransactionID); err != nil {
+				slog.Error("recurring: clear transaction suggestions", "error", err, "transaction_id", t.TransactionID)
+			}
 		}
 	}
 	if len(toFlag) > 0 || len(toItemize) > 0 {
