@@ -109,6 +109,7 @@ func main() {
 	plaidAccountRepo := repository.NewPlaidAccountRepo(db, repository.DialectSQLite)
 	receiptRepo := repository.NewReceiptRepo(db, repository.DialectSQLite)
 	receiptMatchRepo := repository.NewReceiptMatchRepo(db, repository.DialectSQLite)
+	suggestionRepo := repository.NewReceiptMatchSuggestionRepo(db, repository.DialectSQLite)
 	merchantRepo := repository.NewMerchantRepo(db, repository.DialectSQLite)
 	txCacheRepo := repository.NewTransactionCacheRepo(db, repository.DialectSQLite)
 	merchantAliasRepo := repository.NewMerchantAliasRepo(db, repository.DialectSQLite)
@@ -138,7 +139,7 @@ func main() {
 		nil, // thumbnailSvc — not needed locally
 		storageSvc,
 		"", // baseImageURL
-	)
+	).WithSuggestionRepo(suggestionRepo)
 	noteSvc := pkgservice.NewNoteService(noteRepo)
 	labelSvc := pkgservice.NewLabelService(labelRepo, labelAssignRepo)
 	receiptItemSvc := pkgservice.NewReceiptItemService(receiptItemRepo, receiptRepo)

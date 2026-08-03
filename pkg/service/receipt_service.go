@@ -21,6 +21,7 @@ import (
 type ReceiptService struct {
 	receiptRepo      repository.ReceiptRepository
 	matchRepo        repository.ReceiptMatchRepository
+	suggestionRepo   repository.ReceiptMatchSuggestionRepository
 	txCacheRepo      repository.TransactionCacheRepository
 	matchingSvc      *MatchingService
 	openAISvc        *OpenAIService
@@ -46,21 +47,35 @@ func NewReceiptService(
 	baseImageURL string,
 ) *ReceiptService {
 	return &ReceiptService{
-		receiptRepo:   receiptRepo,
-		matchRepo:     matchRepo,
-		txCacheRepo:   txCacheRepo,
-		matchingSvc:   matchingSvc,
-		openAISvc:     openAISvc,
-		currencySvc:   currencySvc,
-		categorySvc:   categorySvc,
+		receiptRepo:  receiptRepo,
+		matchRepo:    matchRepo,
+		txCacheRepo:  txCacheRepo,
+		matchingSvc:  matchingSvc,
+		openAISvc:    openAISvc,
+		currencySvc:  currencySvc,
+		categorySvc:  categorySvc,
 		thumbnailSvc: thumbnailSvc,
 		storageSvc:   storageSvc,
 		baseImageURL: baseImageURL,
 	}
 }
 
+// WithSuggestionRepo enables the suggestion pipeline. Without it the service
+// still auto-matches; it just has nowhere to record proposals, so anything
+// short of an auto-match is dropped.
+func (s *ReceiptService) WithSuggestionRepo(repo repository.ReceiptMatchSuggestionRepository) *ReceiptService {
+	s.suggestionRepo = repo
+	return s
+}
+
 // ReceiptRepo returns the underlying receipt repository.
 func (s *ReceiptService) ReceiptRepo() repository.ReceiptRepository { return s.receiptRepo }
+
+// SuggestionRepo returns the underlying suggestion repository (nil when the
+// service was built without one).
+func (s *ReceiptService) SuggestionRepo() repository.ReceiptMatchSuggestionRepository {
+	return s.suggestionRepo
+}
 
 // OpenAISvc returns the underlying OpenAI service.
 func (s *ReceiptService) OpenAISvc() *OpenAIService { return s.openAISvc }
@@ -136,9 +151,9 @@ type ScanResult struct {
 
 // BatchScanResult holds the results of scanning multiple receipt images from a directory.
 type BatchScanResult struct {
-	Succeeded []ScanResult `json:"succeeded"`
+	Succeeded []ScanResult       `json:"succeeded"`
 	Failed    []BatchScanFailure `json:"failed"`
-	Total     int `json:"total"`
+	Total     int                `json:"total"`
 }
 
 // BatchScanFailure records a single image that failed to process.
@@ -393,54 +408,130 @@ func IsValidReceipt(receipt *domain.Receipt) bool {
 	return hasTotal || hasMerchant
 }
 
-// TryMatch uses the deterministic-first matching pipeline to find and
-// commit the best match for a receipt:
-//   - match_type "matched"   -> receipt_match created with method "auto",    status "matched"
-//   - match_type "suggested" -> receipt_match created with method "suggested", status "suggested"
-//   - no result              -> receipt stays "unmatched"
+// TryMatch runs the matching pipeline for a receipt and commits the outcome:
+//   - auto        -> receipt_match created with method "auto", status "matched"
+//   - suggestions -> ranked rows in receipt_match_suggestions, status stays "unmatched"
+//   - no result   -> receipt stays "unmatched" and any stale proposals are cleared
+//
+// A receipt only needs enough OCR to anchor a search — a readable merchant
+// with either an amount or a date is plenty, so the gate here is deliberately
+// looser than "has a total".
 func (s *ReceiptService) TryMatch(ctx context.Context, userID uuid.UUID, receipt *domain.Receipt) {
-	if receipt.Total == nil || *receipt.Total <= 0 {
+	if !IsValidReceipt(receipt) {
 		return
 	}
 
-	result, err := s.matchingSvc.MatchReceipt(ctx, userID, receipt)
+	outcome, err := s.matchingSvc.MatchReceipt(ctx, userID, receipt)
 	if err != nil {
 		slog.Error("match-pipeline: error", "error", err, "receipt_id", receipt.ID)
 		return
 	}
-	if result == nil {
-		return
+	s.commitOutcome(ctx, userID, receipt, outcome)
+}
+
+// commitOutcome persists whatever the pipeline decided for one receipt. Shared
+// by the single-receipt path (TryMatch) and the batch sweep (SuggestMatches).
+// Reports whether a settled match was created.
+func (s *ReceiptService) commitOutcome(ctx context.Context, userID uuid.UUID, receipt *domain.Receipt, outcome *MatchOutcome) bool {
+	if outcome == nil || outcome.Auto == nil {
+		s.storeSuggestions(ctx, userID, receipt, outcome)
+		return false
 	}
 
-	method := result.MatchType
-	if method == "matched" {
-		method = "auto"
-	}
-
+	result := outcome.Auto
 	match := &domain.ReceiptMatch{
 		ReceiptID:       receipt.ID,
 		TransactionID:   result.TransactionID,
 		AccountID:       result.AccountID,
 		ConfidenceScore: result.Confidence,
-		MatchMethod:     method,
+		MatchMethod:     "auto",
 		MatchReason:     result.Reason,
 	}
 
 	if err := s.matchRepo.Create(ctx, match); err != nil {
 		slog.Error("match-pipeline: create match", "error", err, "receipt_id", receipt.ID)
-		return
+		return false
 	}
-	newStatus := result.MatchType // "matched" or "suggested"
-	if err := s.receiptRepo.UpdateStatus(ctx, receipt.ID, newStatus); err != nil {
+	if err := s.receiptRepo.UpdateStatus(ctx, receipt.ID, "matched"); err != nil {
 		slog.Error("match-pipeline: update status", "error", err, "receipt_id", receipt.ID)
-		return
+		return false
 	}
-	receipt.Status = newStatus
+	receipt.Status = "matched"
+
+	// The receipt is settled, and so is the transaction — drop every proposal
+	// naming either of them so no other receipt keeps offering this charge.
+	if s.suggestionRepo != nil {
+		if err := s.suggestionRepo.DeleteForReceipt(ctx, receipt.ID); err != nil {
+			slog.Error("match-pipeline: clear receipt suggestions", "error", err, "receipt_id", receipt.ID)
+		}
+		if err := s.suggestionRepo.DeleteForTransaction(ctx, result.TransactionID); err != nil {
+			slog.Error("match-pipeline: clear transaction suggestions", "error", err, "tx_id", result.TransactionID)
+		}
+	}
 
 	// Trigger category correction asynchronously after successful match.
 	if s.categorySvc != nil && result.Transaction != nil {
 		go s.categorySvc.CorrectCategoryAfterMatch(context.Background(), receipt, result.Transaction)
 	}
+	return true
+}
+
+// storeSuggestions replaces a receipt's pending proposals with the current
+// ranked set. An empty outcome still runs: proposals raised against stale data
+// should disappear once they stop being supported.
+func (s *ReceiptService) storeSuggestions(ctx context.Context, userID uuid.UUID, receipt *domain.Receipt, outcome *MatchOutcome) {
+	if s.suggestionRepo == nil {
+		return
+	}
+
+	var rows []domain.ReceiptMatchSuggestion
+	if outcome != nil {
+		rows = make([]domain.ReceiptMatchSuggestion, 0, len(outcome.Suggestions))
+		for i, r := range outcome.Suggestions {
+			rows = append(rows, buildSuggestion(userID, receipt.ID, i+1, &r))
+		}
+	}
+
+	if err := s.suggestionRepo.ReplaceForReceipt(ctx, receipt.ID, rows); err != nil {
+		slog.Error("match-pipeline: store suggestions", "error", err, "receipt_id", receipt.ID)
+		return
+	}
+	if len(rows) > 0 {
+		slog.Info("match-pipeline: suggestions stored",
+			"receipt_id", receipt.ID, "count", len(rows), "top_flag", rows[0].Flag)
+	}
+}
+
+// buildSuggestion projects a pipeline result onto its stored form. The three
+// per-dimension scores stay nil when the receipt carried no value for them —
+// clients need that to say "we couldn't read the total" rather than implying
+// the total disagreed.
+func buildSuggestion(userID, receiptID uuid.UUID, rank int, r *MatchResult) domain.ReceiptMatchSuggestion {
+	row := domain.ReceiptMatchSuggestion{
+		UserID:         userID,
+		ReceiptID:      receiptID,
+		TransactionID:  r.TransactionID,
+		AccountID:      r.AccountID,
+		CompositeScore: r.Confidence,
+		MerchantMethod: r.Scores.MerchantMethod,
+		Flag:           r.Flag,
+		Reason:         r.Reason,
+		Rank:           rank,
+		LLMUsed:        r.LLMUsed,
+	}
+	if r.Scores.AmountKnown {
+		amount, diff := r.Scores.AmountScore, r.Scores.AmountDiffPct
+		row.AmountScore, row.AmountDiffPct = &amount, &diff
+	}
+	if r.Scores.DateKnown {
+		date, days := r.Scores.DateScore, r.Scores.DateDiffDays
+		row.DateScore, row.DateDiffDays = &date, &days
+	}
+	if r.Scores.MerchantKnown {
+		merchant := r.Scores.MerchantScore
+		row.MerchantScore = &merchant
+	}
+	return row
 }
 
 func (s *ReceiptService) GetByID(ctx context.Context, userID, receiptID uuid.UUID) (*domain.Receipt, error) {
@@ -467,6 +558,15 @@ func (s *ReceiptService) ListWithMatches(ctx context.Context, userID uuid.UUID, 
 
 func (s *ReceiptService) CountUnmatched(ctx context.Context, userID uuid.UUID) (int, error) {
 	return s.receiptRepo.CountUnmatched(ctx, userID)
+}
+
+// CountWithSuggestions counts receipts carrying at least one pending proposal
+// — the size of the user's review queue, not the number of proposals.
+func (s *ReceiptService) CountWithSuggestions(ctx context.Context, userID uuid.UUID) (int, error) {
+	if s.suggestionRepo == nil {
+		return 0, nil
+	}
+	return s.suggestionRepo.CountPendingByUser(ctx, userID)
 }
 
 // LinkCandidatesResult holds the two sections for the manual linking UI.
@@ -560,7 +660,6 @@ func (s *ReceiptService) GetByIDWithMatch(ctx context.Context, userID, receiptID
 	}
 	return rwm, nil
 }
-
 
 func (s *ReceiptService) Update(ctx context.Context, userID, receiptID uuid.UUID, updates map[string]interface{}) (*domain.Receipt, error) {
 	receipt, err := s.receiptRepo.FindByID(ctx, receiptID)
@@ -744,8 +843,15 @@ func (s *ReceiptService) Match(ctx context.Context, userID, receiptID uuid.UUID,
 	return s.receiptRepo.UpdateStatus(ctx, receiptID, "matched")
 }
 
-// SuggestMatches runs the deterministic-first matching pipeline for all
-// unmatched receipts. Returns the number of matches created.
+// SuggestMatches runs the matching pipeline over every unmatched receipt,
+// auto-linking what it can and refreshing the ranked proposals for the rest.
+// Returns the number of receipts that were auto-matched.
+//
+// Receipts carrying proposals are deliberately still in scope: a proposal is
+// not a settled link, and a later sync may surface a transaction that beats it
+// (or one that finally lets the receipt auto-match). Pairs the user has
+// rejected are excluded at the candidate query, so re-running is idempotent
+// rather than a source of churn.
 func (s *ReceiptService) SuggestMatches(ctx context.Context, userID uuid.UUID) (int, error) {
 	release, ok := s.acquireSuggestLock(userID)
 	if !ok {
@@ -786,41 +892,14 @@ func (s *ReceiptService) SuggestMatches(ctx context.Context, userID uuid.UUID) (
 			s.recentlyAccessed.Delete(receipt.ID)
 		}
 
-		result, err := s.matchingSvc.MatchReceipt(ctx, userID, receipt)
+		outcome, err := s.matchingSvc.MatchReceipt(ctx, userID, receipt)
 		if err != nil {
 			slog.Error("suggest-match: pipeline error", "error", err, "receipt_id", receipt.ID)
 			continue
 		}
-		if result == nil {
-			continue
-		}
 
-		method := result.MatchType
-		if method == "matched" {
-			method = "auto"
-		}
-
-		match := &domain.ReceiptMatch{
-			ReceiptID:       receipt.ID,
-			TransactionID:   result.TransactionID,
-			AccountID:       result.AccountID,
-			ConfidenceScore: result.Confidence,
-			MatchMethod:     method,
-			MatchReason:     result.Reason,
-		}
-		if err := s.matchRepo.Create(ctx, match); err != nil {
-			slog.Error("suggest-match: create match", "error", err, "receipt_id", receipt.ID)
-			continue
-		}
-		if err := s.receiptRepo.UpdateStatus(ctx, receipt.ID, result.MatchType); err != nil {
-			slog.Error("suggest-match: update status", "error", err, "receipt_id", receipt.ID)
-			continue
-		}
-		matched++
-
-		// Trigger category correction asynchronously.
-		if s.categorySvc != nil && result.Transaction != nil {
-			go s.categorySvc.CorrectCategoryAfterMatch(context.Background(), receipt, result.Transaction)
+		if s.commitOutcome(ctx, userID, receipt, outcome) {
+			matched++
 		}
 	}
 
@@ -836,30 +915,149 @@ func (s *ReceiptService) acquireSuggestLock(userID uuid.UUID) (func(), bool) {
 	return mu.Unlock, true
 }
 
-// ConfirmSuggestion confirms a suggested match, changing status from "suggested" to "matched".
-func (s *ReceiptService) ConfirmSuggestion(ctx context.Context, userID, receiptID uuid.UUID) error {
+// ListSuggestions returns a receipt's pending proposals, best first, each
+// hydrated with the transaction it points at.
+func (s *ReceiptService) ListSuggestions(ctx context.Context, userID, receiptID uuid.UUID) ([]domain.SuggestionWithTransaction, error) {
+	receipt, err := s.receiptRepo.FindByID(ctx, receiptID)
+	if err != nil {
+		return nil, err
+	}
+	if receipt.UserID != userID {
+		return nil, domain.ErrForbidden
+	}
+	if s.suggestionRepo == nil {
+		return nil, nil
+	}
+
+	rows, err := s.suggestionRepo.FindByReceiptID(ctx, receiptID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.SuggestionWithTransaction, 0, len(rows))
+	for i := range rows {
+		item := domain.SuggestionWithTransaction{ReceiptMatchSuggestion: rows[i]}
+		if tx, err := s.txCacheRepo.FindByTransactionID(ctx, rows[i].TransactionID); err == nil {
+			item.Transaction = tx
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// ListSuggestionsForTransaction is the mirror of ListSuggestions: the receipts
+// proposed for one transaction, each hydrated with the receipt itself.
+func (s *ReceiptService) ListSuggestionsForTransaction(ctx context.Context, userID uuid.UUID, txID string) ([]domain.SuggestionWithReceipt, error) {
+	if s.suggestionRepo == nil {
+		return nil, nil
+	}
+	rows, err := s.suggestionRepo.FindByTransactionID(ctx, txID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]domain.SuggestionWithReceipt, 0, len(rows))
+	for i := range rows {
+		// The suggestion carries the owner, so a transaction id belonging to
+		// someone else simply yields nothing rather than an error.
+		if rows[i].UserID != userID {
+			continue
+		}
+		item := domain.SuggestionWithReceipt{ReceiptMatchSuggestion: rows[i]}
+		if receipt, err := s.receiptRepo.FindByID(ctx, rows[i].ReceiptID); err == nil {
+			item.Receipt = receipt
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// resolveSuggestion picks which proposal an action applies to. Clients that
+// know the transaction name it; older clients (and the MCP tools) omit it,
+// which is unambiguous only while a single proposal is pending.
+func (s *ReceiptService) resolveSuggestion(ctx context.Context, userID, receiptID uuid.UUID, txID string) (*domain.ReceiptMatchSuggestion, error) {
+	receipt, err := s.receiptRepo.FindByID(ctx, receiptID)
+	if err != nil {
+		return nil, err
+	}
+	if receipt.UserID != userID {
+		return nil, domain.ErrForbidden
+	}
+	if s.suggestionRepo == nil {
+		return nil, domain.ErrNotFound
+	}
+
+	if txID != "" {
+		return s.suggestionRepo.FindPair(ctx, receiptID, txID)
+	}
+
+	pending, err := s.suggestionRepo.FindByReceiptID(ctx, receiptID)
+	if err != nil {
+		return nil, err
+	}
+	switch len(pending) {
+	case 0:
+		return nil, fmt.Errorf("receipt has no pending suggestion: %w", domain.ErrBadRequest)
+	case 1:
+		return &pending[0], nil
+	default:
+		return nil, fmt.Errorf("receipt has %d pending suggestions, transaction_id required: %w",
+			len(pending), domain.ErrBadRequest)
+	}
+}
+
+// ConfirmSuggestion settles a proposal into a real match. Passing an empty
+// transactionID is allowed only while exactly one proposal is pending.
+func (s *ReceiptService) ConfirmSuggestion(ctx context.Context, userID, receiptID uuid.UUID, transactionID string) error {
+	suggestion, err := s.resolveSuggestion(ctx, userID, receiptID, transactionID)
+	if err != nil {
+		return err
+	}
+
 	receipt, err := s.receiptRepo.FindByID(ctx, receiptID)
 	if err != nil {
 		return err
 	}
-	if receipt.UserID != userID {
-		return domain.ErrForbidden
-	}
-	if receipt.Status != "suggested" {
-		return fmt.Errorf("receipt is not in suggested state: %w", domain.ErrBadRequest)
+
+	// Proposals are non-exclusive, so two receipts can be offered the same
+	// charge and the user can reach both. Whoever confirms first wins; the
+	// second gets a conflict rather than a constraint violation surfacing as a
+	// 500. (The DB unique index is still the real arbiter — this check just
+	// makes the common case legible.)
+	if existing, err := s.matchRepo.FindByTransactionID(ctx, suggestion.TransactionID); err == nil {
+		if existing.ReceiptID == receiptID {
+			// Already settled against this very receipt — nothing to do.
+			return nil
+		}
+		return fmt.Errorf("transaction already matched to receipt %s: %w",
+			existing.ReceiptID, domain.ErrConflict)
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
 	}
 
-	match, err := s.matchRepo.FindByReceiptID(ctx, receiptID)
-	if err != nil {
-		return fmt.Errorf("no match found for suggested receipt: %w", err)
+	match := &domain.ReceiptMatch{
+		ReceiptID:       receiptID,
+		TransactionID:   suggestion.TransactionID,
+		AccountID:       suggestion.AccountID,
+		ConfidenceScore: suggestion.CompositeScore,
+		MatchMethod:     "confirmed",
+		MatchReason:     suggestion.Reason,
 	}
-
-	if err := s.matchRepo.UpdateMethod(ctx, match.ID, "confirmed"); err != nil {
-		return fmt.Errorf("update match method: %w", err)
+	if err := s.matchRepo.Create(ctx, match); err != nil {
+		return fmt.Errorf("create confirmed match: %w", err)
 	}
 
 	if err := s.receiptRepo.UpdateStatus(ctx, receiptID, "matched"); err != nil {
 		return err
+	}
+
+	// Both sides are settled now: clear the receipt's remaining proposals and
+	// any other receipt's proposals against this transaction.
+	if err := s.suggestionRepo.DeleteForReceipt(ctx, receiptID); err != nil {
+		slog.Error("confirm-suggestion: clear receipt suggestions", "error", err, "receipt_id", receiptID)
+	}
+	if err := s.suggestionRepo.DeleteForTransaction(ctx, suggestion.TransactionID); err != nil {
+		slog.Error("confirm-suggestion: clear transaction suggestions", "error", err, "tx_id", suggestion.TransactionID)
 	}
 
 	// Trigger category correction when user confirms a suggested match.
@@ -876,24 +1074,15 @@ func (s *ReceiptService) ConfirmSuggestion(ctx context.Context, userID, receiptI
 	return nil
 }
 
-// RejectSuggestion rejects a suggested match, deleting the match and reverting to "unmatched".
-func (s *ReceiptService) RejectSuggestion(ctx context.Context, userID, receiptID uuid.UUID) error {
-	receipt, err := s.receiptRepo.FindByID(ctx, receiptID)
+// RejectSuggestion records the user's verdict on one pair. The rejection is
+// durable — the matcher skips this receipt/transaction pair from here on, so
+// the next sync does not re-raise what the user just dismissed.
+func (s *ReceiptService) RejectSuggestion(ctx context.Context, userID, receiptID uuid.UUID, transactionID string) error {
+	suggestion, err := s.resolveSuggestion(ctx, userID, receiptID, transactionID)
 	if err != nil {
 		return err
 	}
-	if receipt.UserID != userID {
-		return domain.ErrForbidden
-	}
-	if receipt.Status != "suggested" {
-		return fmt.Errorf("receipt is not in suggested state: %w", domain.ErrBadRequest)
-	}
-
-	if err := s.matchRepo.DeleteByReceiptID(ctx, receiptID); err != nil {
-		return fmt.Errorf("delete suggested match: %w", err)
-	}
-
-	return s.receiptRepo.UpdateStatus(ctx, receiptID, "unmatched")
+	return s.suggestionRepo.MarkRejected(ctx, receiptID, suggestion.TransactionID)
 }
 
 func (s *ReceiptService) Unmatch(ctx context.Context, userID, receiptID uuid.UUID) error {

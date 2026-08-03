@@ -12,6 +12,17 @@ import (
 	"github.com/Vero-Receipts/vero-mcp/pkg/repository"
 )
 
+// Thresholds above which a dimension counts as "strong" — i.e. it agrees well
+// enough to be one of the two dimensions carrying a decision. Below these a
+// known dimension is "weak": it disagrees, but within tolerance. A score of
+// exactly 0 from scoreAmount/scoreDate means "contradicting" and never reaches
+// the caller — ScoreCandidates drops those candidates outright.
+const (
+	StrongAmount   = 0.85 // ≤5% difference
+	StrongDate     = 0.70 // ≤3 days
+	StrongMerchant = 0.80 // deterministic exact/substring/compact/alias/core
+)
+
 // ScoringService computes deterministic match scores between receipts and
 // transactions. The LLM is only consulted for merchant disambiguation when
 // the deterministic merchant score is ambiguous.
@@ -24,33 +35,49 @@ func NewScoringService(aliasRepo repository.MerchantAliasRepository) *ScoringSer
 }
 
 // ScoreCandidates scores every candidate against the receipt and returns
-// results sorted by composite score descending, already filtered to only
-// plausible matches (amount within 20%, date within 5 days).
+// results sorted by composite score descending.
+//
+// A dimension the receipt has no value for (unreadable total or date) is left
+// unscored and marked unknown rather than guessed at — in particular a missing
+// date is NOT stood in for by today, which would score proximity against a
+// date the receipt never carried. A dimension that IS known but disagrees
+// beyond its cliff (amount past 20%/40% FX, date past 5 days) still drops the
+// candidate here: that is the veto, and it is deliberately unchanged.
+//
+// Merchant is never a drop — the caller tolerates a disagreeing merchant when
+// amount and date both hold up.
 func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Receipt, candidates []domain.Transaction) []domain.CandidateScores {
-	if receipt.Total == nil || *receipt.Total <= 0 {
-		return nil
-	}
-
-	receiptAmount := s.effectiveUSD(receipt)
+	receiptAmount, amountKnown := s.effectiveUSD(receipt)
 	isNonUSD := s.isNonUSD(receipt)
 
 	var receiptDate time.Time
-	if receipt.Date != nil {
+	dateKnown := receipt.Date != nil
+	if dateKnown {
 		receiptDate = *receipt.Date
-	} else {
-		receiptDate = time.Now()
 	}
 
 	receiptMerchant := ""
 	if receipt.MerchantName != nil {
 		receiptMerchant = *receipt.MerchantName
 	}
+	merchantKnown := receiptMerchant != ""
 
-	slog.Debug("scorer: starting", "receipt_amount", receiptAmount, "receipt_date", receiptDate.Format("2006-01-02"), "is_non_usd", isNonUSD, "candidate_count", len(candidates))
+	if !amountKnown && !dateKnown {
+		// Nothing to anchor on: merchant alone can never carry a decision.
+		slog.Debug("scorer: skipped — receipt has neither amount nor date", "receipt_id", receipt.ID)
+		return nil
+	}
+
+	slog.Debug("scorer: starting", "receipt_amount", receiptAmount, "amount_known", amountKnown, "date_known", dateKnown, "is_non_usd", isNonUSD, "candidate_count", len(candidates))
 
 	var scored []domain.CandidateScores
 	for _, tx := range candidates {
-		cs := domain.CandidateScores{TransactionID: tx.TransactionID}
+		cs := domain.CandidateScores{
+			TransactionID: tx.TransactionID,
+			AmountKnown:   amountKnown,
+			DateKnown:     dateKnown,
+			MerchantKnown: merchantKnown,
+		}
 
 		// --- Amount Score ---
 		txAbs := math.Abs(tx.Amount)
@@ -58,33 +85,37 @@ func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Re
 			slog.Debug("scorer: dropped — zero amount", "tx_id", tx.TransactionID, "tx_amount", tx.Amount)
 			continue
 		}
-		amountDiffPct := math.Abs(receiptAmount-txAbs) / math.Max(receiptAmount, txAbs) * 100
-		// chargeExceeds: bank charged more than the receipt total. Common when
-		// fees, surcharges, or other charges are added after the receipt is
-		// printed (applies across many merchant types, not just restaurants).
-		chargeExceeds := txAbs > receiptAmount
-		cs.AmountDiffPct = amountDiffPct
-		cs.AmountScore = scoreAmount(amountDiffPct, isNonUSD, chargeExceeds)
-		if cs.AmountScore == 0 {
-			slog.Debug("scorer: dropped — amount too far", "tx_id", tx.TransactionID, "tx_amount", tx.Amount, "receipt_amount", receiptAmount, "diff_pct", amountDiffPct)
-			continue
-		}
-		if chargeExceeds && amountDiffPct > 5 && amountDiffPct <= 35 {
-			cs.ChargeExceedsReceipt = true
+		if amountKnown {
+			amountDiffPct := math.Abs(receiptAmount-txAbs) / math.Max(receiptAmount, txAbs) * 100
+			// chargeExceeds: bank charged more than the receipt total. Common when
+			// fees, surcharges, or other charges are added after the receipt is
+			// printed (applies across many merchant types, not just restaurants).
+			chargeExceeds := txAbs > receiptAmount
+			cs.AmountDiffPct = amountDiffPct
+			cs.AmountScore = scoreAmount(amountDiffPct, isNonUSD, chargeExceeds)
+			if cs.AmountScore == 0 {
+				slog.Debug("scorer: dropped — amount too far", "tx_id", tx.TransactionID, "tx_amount", tx.Amount, "receipt_amount", receiptAmount, "diff_pct", amountDiffPct)
+				continue
+			}
+			if chargeExceeds && amountDiffPct > 5 && amountDiffPct <= 35 {
+				cs.ChargeExceedsReceipt = true
+			}
 		}
 
 		// --- Date Score ---
-		txDate, err := time.Parse("2006-01-02", tx.Date)
-		if err != nil {
-			slog.Debug("scorer: dropped — date parse failed", "tx_id", tx.TransactionID, "tx_date_raw", tx.Date, "error", err)
-			continue
-		}
-		daysDiff := int(math.Abs(receiptDate.Sub(txDate).Hours() / 24))
-		cs.DateDiffDays = daysDiff
-		cs.DateScore = scoreDate(daysDiff)
-		if cs.DateScore == 0 {
-			slog.Debug("scorer: dropped — date too far", "tx_id", tx.TransactionID, "tx_date", tx.Date, "days_diff", daysDiff)
-			continue
+		if dateKnown {
+			txDate, err := time.Parse("2006-01-02", tx.Date)
+			if err != nil {
+				slog.Debug("scorer: dropped — date parse failed", "tx_id", tx.TransactionID, "tx_date_raw", tx.Date, "error", err)
+				continue
+			}
+			daysDiff := int(math.Abs(receiptDate.Sub(txDate).Hours() / 24))
+			cs.DateDiffDays = daysDiff
+			cs.DateScore = scoreDate(daysDiff)
+			if cs.DateScore == 0 {
+				slog.Debug("scorer: dropped — date too far", "tx_id", tx.TransactionID, "tx_date", tx.Date, "days_diff", daysDiff)
+				continue
+			}
 		}
 
 		// --- Merchant Score (deterministic) ---
@@ -94,8 +125,8 @@ func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Re
 		}
 		cs.MerchantScore, cs.MerchantMethod = s.scoreMerchant(ctx, receiptMerchant, txMerchant, tx.Name)
 
-		// --- Composite ---
-		cs.CompositeScore = cs.AmountScore*0.35 + cs.DateScore*0.25 + cs.MerchantScore*0.40
+		// --- Composite (over known dimensions only) ---
+		cs.CompositeScore = cs.Composite()
 
 		slog.Debug("scorer: candidate passed", "tx_id", tx.TransactionID, "amount_score", cs.AmountScore, "date_score", cs.DateScore, "merchant_score", cs.MerchantScore, "composite", cs.CompositeScore)
 		scored = append(scored, cs)
@@ -106,12 +137,16 @@ func (s *ScoringService) ScoreCandidates(ctx context.Context, receipt *domain.Re
 	return scored
 }
 
-// effectiveUSD returns the best USD amount for comparison.
-func (s *ScoringService) effectiveUSD(receipt *domain.Receipt) float64 {
+// effectiveUSD returns the best USD amount for comparison, and whether the
+// receipt carries a usable total at all.
+func (s *ScoringService) effectiveUSD(receipt *domain.Receipt) (float64, bool) {
 	if receipt.TotalUSD != nil && *receipt.TotalUSD > 0 {
-		return *receipt.TotalUSD
+		return *receipt.TotalUSD, true
 	}
-	return *receipt.Total
+	if receipt.Total != nil && *receipt.Total > 0 {
+		return *receipt.Total, true
+	}
+	return 0, false
 }
 
 func (s *ScoringService) isNonUSD(receipt *domain.Receipt) bool {

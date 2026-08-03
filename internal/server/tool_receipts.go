@@ -171,7 +171,9 @@ func (h *ToolHandlers) ConfirmSuggestionHandler(ctx context.Context, req mcp.Cal
 		return mcp.NewToolResultError("invalid receipt_id format"), nil
 	}
 
-	if err := h.ReceiptSvc.ConfirmSuggestion(ctx, h.UserID, rID); err != nil {
+	// transaction_id is optional: a receipt usually has one pending suggestion,
+	// and the service resolves it. It is required only when several are open.
+	if err := h.ReceiptSvc.ConfirmSuggestion(ctx, h.UserID, rID, stringArg(req, "transaction_id")); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to confirm suggestion: %v", err)), nil
 	}
 
@@ -190,7 +192,7 @@ func (h *ToolHandlers) RejectSuggestionHandler(ctx context.Context, req mcp.Call
 		return mcp.NewToolResultError("invalid receipt_id format"), nil
 	}
 
-	if err := h.ReceiptSvc.RejectSuggestion(ctx, h.UserID, rID); err != nil {
+	if err := h.ReceiptSvc.RejectSuggestion(ctx, h.UserID, rID, stringArg(req, "transaction_id")); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to reject suggestion: %v", err)), nil
 	}
 

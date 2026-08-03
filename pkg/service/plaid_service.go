@@ -790,6 +790,7 @@ func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, f
 			CorrectedPFCPrimary:  row.CorrectedPFCPrimary,
 			CorrectedPFCDetailed: row.CorrectedPFCDetailed,
 			Receipt:              row.Receipt,
+			SuggestedReceipt:     row.Suggested,
 		}
 		txs = append(txs, resp)
 	}

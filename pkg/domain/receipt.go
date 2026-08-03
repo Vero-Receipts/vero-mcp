@@ -54,8 +54,8 @@ type OCRResult struct {
 	LineItems       []LineItem `json:"line_items"`
 	MerchantName    string     `json:"merchant_name,omitempty"`
 	MerchantAddress string     `json:"merchant_address,omitempty"`
-	MerchantCity    string     `json:"merchant_city,omitempty"`  // parsed from MerchantAddress
-	MerchantState   string     `json:"merchant_state,omitempty"` // 2-letter, normalized
+	MerchantCity    string     `json:"merchant_city,omitempty"`    // parsed from MerchantAddress
+	MerchantState   string     `json:"merchant_state,omitempty"`   // 2-letter, normalized
 	TransactionDate string     `json:"transaction_date,omitempty"` // YYYY-MM-DD
 	TransactionTime string     `json:"transaction_time,omitempty"` // HH:MM
 	Subtotal        *float64   `json:"subtotal,omitempty"`
@@ -78,7 +78,9 @@ type ReceiptWithMatch struct {
 }
 
 type ReceiptFilter struct {
-	Status            string   // "matched", "unmatched", "suggested", or "" for all
+	Status string // "matched", "unmatched", "duplicate", "processing", or "" for all.
+	// "suggested" is accepted as a legacy alias for HasSuggestions.
+	HasSuggestions    bool     // only receipts carrying at least one pending proposal
 	Source            string   // "upload", "email", or "" for all
 	MatchMethod       string   // "auto", "manual", "suggested", "confirmed", or "" for all
 	Search            string   // text search across merchant_name + line_items

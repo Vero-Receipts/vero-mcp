@@ -1,0 +1,29 @@
+# Secrets. The MCP server reads Plaid/OpenAI credentials and the receipt
+# encryption key from here — it must never be committed.
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Build output
+/vero-mcp
+/bin/
+/dist/
+
+# Go test/coverage artifacts
+*.test
+*.out
+coverage.html
+
+# Local receipt storage and scratch data
+/receipts/
+*.db
+*.sqlite
+*.sqlite3
+
+# Editor
+.idea/
+.vscode/
+*.swp

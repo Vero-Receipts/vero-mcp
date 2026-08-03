@@ -50,6 +50,23 @@ type MatchResult struct {
 	Transaction   *domain.Transaction // the matched transaction, for downstream use
 }
 
+// MatchOutcome is what a receipt resolves to. At most one of the two is
+// populated: a candidate good enough to link automatically short-circuits the
+// search, otherwise every candidate worth a human decision is returned ranked.
+type MatchOutcome struct {
+	Auto        *MatchResult
+	Suggestions []MatchResult
+}
+
+// maxSuggestions caps how many proposals a single receipt may raise. Beyond a
+// handful the review is worse than no suggestion at all.
+const maxSuggestions = 3
+
+// suggestionCandidateLimit is how many scored candidates are evaluated before
+// giving up. Higher than the auto-match path needs because a receipt missing a
+// dimension casts a wider net.
+const suggestionCandidateLimit = 8
+
 // FindAllUnmatchedTransactions returns all transactions not yet matched to a receipt.
 func (s *MatchingService) FindAllUnmatchedTransactions(ctx context.Context, userID uuid.UUID) ([]domain.Transaction, error) {
 	return s.txCacheRepo.FindAllUnmatched(ctx, userID)
@@ -69,64 +86,22 @@ func (s *MatchingService) FindCandidatesByDateRange(ctx context.Context, userID 
 	return s.txCacheRepo.FindUnmatchedByDateRange(ctx, userID, dateStr)
 }
 
-// MatchReceipt is the new unified matching pipeline:
-//  1. DB pre-filter (tight amount + date)
+// MatchReceipt is the unified matching pipeline:
+//  1. DB pre-filter, anchored on whichever dimensions the receipt actually has
 //  2. Deterministic scoring (amount, date, merchant)
 //  3. Merchant alias cache check
 //  4. LLM merchant disambiguation (only if ambiguous)
-//  5. Decision matrix → auto-match, suggest, or skip
+//  5. Decision rule → auto-match, suggest, or skip
 //  6. Cache new merchant alias if LLM confirmed
 //  7. Audit log
-func (s *MatchingService) MatchReceipt(ctx context.Context, userID uuid.UUID, receipt *domain.Receipt) (*MatchResult, error) {
-	if receipt.Total == nil || *receipt.Total <= 0 {
-		return nil, nil
-	}
-
-	// Determine effective amount and date for DB query.
-	compareAmount := *receipt.Total
-	isFX := false
-	if receipt.TotalUSD != nil && *receipt.TotalUSD > 0 {
-		compareAmount = *receipt.TotalUSD
-	} else if receipt.Currency != nil && *receipt.Currency != "" && !strings.EqualFold(*receipt.Currency, "USD") {
-		isFX = true
-	}
-
-	// Build date string: try receipt date first, fallback to today.
-	dateStr := time.Now().Format("2006-01-02")
-	if receipt.Date != nil {
-		dateStr = receipt.Date.Format("2006-01-02")
-	}
-
-	// --- Stage 1: DB Pre-Filter ---
-	candidates, err := s.txCacheRepo.FindUnmatchedTight(ctx, userID, compareAmount, dateStr, isFX)
+//
+// A receipt resolves to at most one auto-match, or to a ranked set of
+// suggestions for the user to decide on.
+func (s *MatchingService) MatchReceipt(ctx context.Context, userID uuid.UUID, receipt *domain.Receipt) (*MatchOutcome, error) {
+	candidates, err := s.findCandidates(ctx, userID, receipt)
 	if err != nil {
-		return nil, fmt.Errorf("find candidates: %w", err)
+		return nil, err
 	}
-
-	// If receipt date differs from today by >3 days, also search around today.
-	if receipt.Date != nil {
-		now := time.Now()
-		diff := now.Sub(*receipt.Date)
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > 3*24*time.Hour {
-			todayStr := now.Format("2006-01-02")
-			extra, err2 := s.txCacheRepo.FindUnmatchedTight(ctx, userID, compareAmount, todayStr, isFX)
-			if err2 == nil && len(extra) > 0 {
-				seen := make(map[string]bool, len(candidates))
-				for _, c := range candidates {
-					seen[c.TransactionID] = true
-				}
-				for _, c := range extra {
-					if !seen[c.TransactionID] {
-						candidates = append(candidates, c)
-					}
-				}
-			}
-		}
-	}
-
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -143,13 +118,12 @@ func (s *MatchingService) MatchReceipt(ctx context.Context, userID uuid.UUID, re
 	}
 
 	// --- Stage 3 & 4: Evaluate top candidates ---
-	// Look at top 3 scored candidates and try to resolve.
-	limit := 3
+	limit := suggestionCandidateLimit
 	if len(scored) < limit {
 		limit = len(scored)
 	}
 
-	var bestResult *MatchResult
+	outcome := &MatchOutcome{}
 	for _, cs := range scored[:limit] {
 		// Find the transaction object.
 		var tx *domain.Transaction
@@ -173,12 +147,103 @@ func (s *MatchingService) MatchReceipt(ctx context.Context, userID uuid.UUID, re
 			continue
 		}
 
-		// Take the first valid result (highest composite score).
-		bestResult = result
-		break
+		// A candidate good enough to link outright ends the search — it is the
+		// highest-scoring one that qualified, and suggesting alternatives
+		// alongside a settled match would be noise.
+		if result.MatchType == "matched" {
+			outcome.Auto = result
+			return outcome, nil
+		}
+
+		outcome.Suggestions = append(outcome.Suggestions, *result)
+		if len(outcome.Suggestions) >= maxSuggestions {
+			break
+		}
 	}
 
-	return bestResult, nil
+	if len(outcome.Suggestions) == 0 {
+		return nil, nil
+	}
+	return outcome, nil
+}
+
+// findCandidates picks the pre-filter that matches what the receipt actually
+// carries. The tight amount+date window is the common path; a receipt missing
+// one of those two anchors falls back to a query anchored on the other, and
+// the surviving dimensions have to be strong for it to amount to anything.
+func (s *MatchingService) findCandidates(ctx context.Context, userID uuid.UUID, receipt *domain.Receipt) ([]domain.Transaction, error) {
+	compareAmount := 0.0
+	amountKnown := false
+	isFX := false
+	if receipt.TotalUSD != nil && *receipt.TotalUSD > 0 {
+		compareAmount, amountKnown = *receipt.TotalUSD, true
+	} else if receipt.Total != nil && *receipt.Total > 0 {
+		compareAmount, amountKnown = *receipt.Total, true
+		if receipt.Currency != nil && *receipt.Currency != "" && !strings.EqualFold(*receipt.Currency, "USD") {
+			isFX = true
+		}
+	}
+
+	switch {
+	case amountKnown && receipt.Date != nil:
+		dateStr := receipt.Date.Format("2006-01-02")
+		candidates, err := s.txCacheRepo.FindUnmatchedTight(ctx, userID, receipt.ID, compareAmount, dateStr, isFX)
+		if err != nil {
+			return nil, fmt.Errorf("find candidates: %w", err)
+		}
+
+		// If receipt date differs from today by >3 days, also search around today.
+		now := time.Now()
+		diff := now.Sub(*receipt.Date)
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > 3*24*time.Hour {
+			todayStr := now.Format("2006-01-02")
+			extra, err2 := s.txCacheRepo.FindUnmatchedTight(ctx, userID, receipt.ID, compareAmount, todayStr, isFX)
+			if err2 == nil {
+				candidates = mergeCandidates(candidates, extra)
+			}
+		}
+		return candidates, nil
+
+	case amountKnown:
+		// No date on the receipt. Anchor tightly on amount and bound the search
+		// by when the receipt was ingested — the only temporal signal left.
+		candidates, err := s.txCacheRepo.FindUnmatchedByAmountOnly(ctx, userID, receipt.ID, compareAmount, receipt.CreatedAt, isFX)
+		if err != nil {
+			return nil, fmt.Errorf("find candidates by amount: %w", err)
+		}
+		return candidates, nil
+
+	case receipt.Date != nil:
+		// No readable total. Anchor on the date and let merchant scoring carry it.
+		dateStr := receipt.Date.Format("2006-01-02")
+		candidates, err := s.txCacheRepo.FindUnmatchedByDateOnly(ctx, userID, receipt.ID, dateStr)
+		if err != nil {
+			return nil, fmt.Errorf("find candidates by date: %w", err)
+		}
+		return candidates, nil
+	}
+
+	// Neither amount nor date: nothing to anchor a search on.
+	return nil, nil
+}
+
+func mergeCandidates(base, extra []domain.Transaction) []domain.Transaction {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]bool, len(base))
+	for _, c := range base {
+		seen[c.TransactionID] = true
+	}
+	for _, c := range extra {
+		if !seen[c.TransactionID] {
+			base = append(base, c)
+		}
+	}
+	return base
 }
 
 // evaluateCandidate processes a single candidate: checks merchant confidence,
@@ -199,31 +264,21 @@ func (s *MatchingService) evaluateCandidate(ctx context.Context, receipt *domain
 	}
 
 	switch {
-	case cs.MerchantScore >= 0.80:
+	case cs.MerchantScore >= StrongMerchant:
 		// High deterministic confidence — merchant confirmed without LLM.
 		merchantConfirmed = true
-		reason = fmt.Sprintf("merchant %s (%.0f%% match), amount diff %.1f%%, date diff %d days",
-			cs.MerchantMethod, cs.MerchantScore*100, cs.AmountDiffPct, cs.DateDiffDays)
+		reason = fmt.Sprintf("merchant %s (%.0f%% match), %s, %s",
+			cs.MerchantMethod, cs.MerchantScore*100, describeAmount(cs), describeDate(cs))
 
-	case cs.MerchantScore >= 0.40 && cs.AmountScore >= 0.70:
-		// Ambiguous merchant but decent amount — ask LLM.
-		if receiptMerchant == "" || (txMerchant == "" && tx.Name == "") {
-			// Can't disambiguate without names.
-			s.logAudit(ctx, receipt, cs, false, nil, "rejected", "missing merchant names for LLM")
-			return nil, nil
-		}
-
+	case cs.MerchantScore >= 0.40 && cs.AmountKnown && cs.AmountScore >= 0.70 &&
+		receiptMerchant != "" && (txMerchant != "" || tx.Name != ""):
+		// Ambiguous merchant but decent amount — ask the LLM. The trigger is
+		// deliberately narrow: everything outside it resolves deterministically,
+		// so widening the suggestion band does not widen LLM spend.
 		llmResult, err := s.openAISvc.DisambiguateMerchant(ctx, receiptMerchant, txMerchant, tx.Name)
 		if err != nil {
 			slog.Warn("match-pipeline: LLM disambiguation failed", "error", err)
-			// Fallback: if single word overlap + great amount, suggest anyway.
-			if cs.MerchantScore >= 0.45 && cs.AmountScore >= 0.85 && cs.DateScore >= 0.70 {
-				merchantConfirmed = false
-				reason = "LLM unavailable, weak merchant match but strong amount+date"
-			} else {
-				s.logAudit(ctx, receipt, cs, true, nil, "rejected", "LLM error: "+err.Error())
-				return nil, nil
-			}
+			reason = "LLM unavailable, merchant unconfirmed"
 		} else {
 			llmUsed = true
 			confirm := llmResult.SameBusiness
@@ -233,82 +288,60 @@ func (s *MatchingService) evaluateCandidate(ctx context.Context, receipt *domain
 				merchantConfirmed = true
 				// Boost merchant score based on LLM confirmation.
 				cs.MerchantScore = 0.85
-				cs.CompositeScore = cs.AmountScore*0.35 + cs.DateScore*0.25 + cs.MerchantScore*0.40
+				cs.CompositeScore = cs.Composite()
 				reason = fmt.Sprintf("LLM confirmed merchant (%.0f%%): %s", llmResult.Confidence*100, llmResult.Reason)
 
 				// Cache the alias for future lookups.
 				s.cacheAlias(ctx, receiptMerchant, txMerchant, tx.Name)
 			} else {
-				s.logAudit(ctx, receipt, cs, true, llmConfirm, "rejected",
-					fmt.Sprintf("LLM rejected merchant: %s", llmResult.Reason))
-				return nil, nil
+				// The LLM says these are different businesses. That settles the
+				// merchant dimension as disagreeing — not the candidate. Amount
+				// and date can still carry it as far as a suggestion.
+				reason = fmt.Sprintf("LLM rejected merchant: %s", llmResult.Reason)
 			}
 		}
 
-	case receiptMerchant == "" && cs.AmountScore >= 0.95 && cs.DateScore >= 0.95:
-		// No merchant info on the receipt — fall back to strict amount+date matching.
-		// AmountScore ≥ 0.95 means ≤2% diff; DateScore ≥ 0.95 means same day or next day.
-		merchantConfirmed = false
-		reason = fmt.Sprintf("no merchant on receipt, strict amount+date: %.1f%% diff, %d days",
-			cs.AmountDiffPct, cs.DateDiffDays)
-
 	default:
-		// Low merchant score — skip.
+		// Merchant is unreadable, or disagrees, or is too ambiguous to be worth
+		// an LLM call. Not a rejection: merchant is the dimension we forgive.
+		reason = fmt.Sprintf("merchant unconfirmed (%.2f %s), %s, %s",
+			cs.MerchantScore, cs.MerchantMethod, describeAmount(cs), describeDate(cs))
+	}
+
+	// --- Stage 5: Decision ---
+	matchType, ok := decideMatchType(cs, merchantConfirmed)
+	if !ok {
 		slog.Debug("match-pipeline: candidate rejected",
 			"receipt_id", receipt.ID,
 			"tx_id", cs.TransactionID,
 			"merchant_score", cs.MerchantScore,
 			"merchant_method", cs.MerchantMethod,
 			"amount_score", cs.AmountScore,
+			"amount_known", cs.AmountKnown,
 			"date_score", cs.DateScore,
+			"date_known", cs.DateKnown,
 			"composite_score", cs.CompositeScore,
 		)
-		s.logAudit(ctx, receipt, cs, false, nil, "rejected",
-			fmt.Sprintf("merchant score too low: %.2f (%s)", cs.MerchantScore, cs.MerchantMethod))
+		s.logAudit(ctx, receipt, cs, llmUsed, llmConfirm, "rejected",
+			fmt.Sprintf("too few agreeing dimensions: %s", reason))
 		return nil, nil
 	}
 
-	// --- Stage 5: Decision Matrix ---
 	confidence := cs.CompositeScore
-	matchType := "suggested"
-
-	if merchantConfirmed && cs.AmountScore >= 0.85 && cs.DateScore >= 0.70 {
-		matchType = "matched"
+	switch {
+	case matchType == "matched":
 		if confidence < 0.85 {
 			confidence = 0.85
 		}
-	} else if merchantConfirmed && cs.AmountScore >= 0.70 && cs.DateScore >= 0.50 {
-		matchType = "suggested"
+	case merchantConfirmed:
 		if confidence < 0.70 {
 			confidence = 0.70
 		}
-	} else if !merchantConfirmed {
-		matchType = "suggested"
+	default:
 		confidence = math.Min(confidence, 0.75)
-	} else {
-		// Merchant confirmed but amount or date weak.
-		matchType = "suggested"
 	}
 
-	// Determine flag.
-	flag := "clean"
-	isFX := receipt.Currency != nil && *receipt.Currency != "" && !strings.EqualFold(*receipt.Currency, "USD")
-	if isFX && (receipt.TotalUSD == nil || *receipt.TotalUSD <= 0) {
-		flag = "fx_suspected"
-	} else if receiptMerchant == "" {
-		flag = "no_merchant"
-	} else if cs.ChargeExceedsReceipt {
-		flag = "amount_upward"
-	} else if cs.AmountDiffPct > 5 {
-		flag = "amount_mismatch"
-	} else if cs.DateDiffDays > 2 {
-		flag = "date_mismatch"
-	}
-
-	if reason == "" {
-		reason = fmt.Sprintf("amount %.1f%% diff, date %d days, merchant %s",
-			cs.AmountDiffPct, cs.DateDiffDays, cs.MerchantMethod)
-	}
+	flag := matchFlag(receipt, cs, merchantConfirmed)
 
 	result := &MatchResult{
 		TransactionID: cs.TransactionID,
@@ -339,6 +372,97 @@ func (s *MatchingService) evaluateCandidate(ctx context.Context, receipt *domain
 	)
 
 	return result, nil
+}
+
+// decideMatchType applies the agreement rule to a scored candidate.
+//
+// Amount and date are the load-bearing dimensions: the scorer has already
+// dropped any candidate whose known amount or date actively contradicts the
+// receipt, and a known-but-soft amount still has to stay inside the suggestion
+// band here. Either may be absent — an unreadable total or date leaves the
+// other two dimensions to carry the decision — but neither may be wrong.
+//
+// Merchant is the forgiving dimension: names arrive mangled by POS prefixes,
+// DBA registrations and payment aggregators often enough that a disagreement
+// is weak evidence. A merchant that is missing, ambiguous, or outright
+// different still yields a suggestion when amount and date both hold.
+//
+// Auto-matching is untouched: it still requires all three to be strong.
+func decideMatchType(cs *domain.CandidateScores, merchantConfirmed bool) (string, bool) {
+	strongAmount := cs.AmountKnown && cs.AmountScore >= StrongAmount
+	strongDate := cs.DateKnown && cs.DateScore >= StrongDate
+	strongMerchant := merchantConfirmed
+
+	if strongMerchant && strongAmount && strongDate {
+		return "matched", true
+	}
+
+	// A known amount that is merely tolerable (>10% off, or an upward charge
+	// past the tip-sized band) is too far to propose on the strength of the
+	// other two dimensions.
+	if cs.AmountKnown && cs.AmountScore < 0.70 {
+		return "", false
+	}
+	if cs.DateKnown && cs.DateScore < 0.50 {
+		return "", false
+	}
+
+	weak := 0
+	for _, strong := range []bool{strongAmount, strongDate, strongMerchant} {
+		if !strong {
+			weak++
+		}
+	}
+
+	switch {
+	case weak == 1:
+		// Exactly one dimension is absent or disagreeing; the other two agree.
+		return "suggested", true
+	case weak == 2 && strongMerchant && cs.AmountKnown && cs.DateKnown:
+		// Merchant is confirmed and both other dimensions are present and
+		// inside tolerance, just not crisp — the long-standing soft band.
+		return "suggested", true
+	}
+	return "", false
+}
+
+// matchFlag names the single dimension a client should explain to the user,
+// most decisive first.
+func matchFlag(receipt *domain.Receipt, cs *domain.CandidateScores, merchantConfirmed bool) string {
+	isFX := receipt.Currency != nil && *receipt.Currency != "" && !strings.EqualFold(*receipt.Currency, "USD")
+	switch {
+	case isFX && (receipt.TotalUSD == nil || *receipt.TotalUSD <= 0):
+		return domain.FlagFXSuspected
+	case !cs.AmountKnown:
+		return domain.FlagNoAmount
+	case !cs.DateKnown:
+		return domain.FlagNoDate
+	case !cs.MerchantKnown:
+		return domain.FlagNoMerchant
+	case !merchantConfirmed:
+		return domain.FlagMerchantMismatch
+	case cs.ChargeExceedsReceipt:
+		return domain.FlagAmountUpward
+	case cs.AmountDiffPct > 5:
+		return domain.FlagAmountMismatch
+	case cs.DateDiffDays > 2:
+		return domain.FlagDateMismatch
+	}
+	return domain.FlagClean
+}
+
+func describeAmount(cs *domain.CandidateScores) string {
+	if !cs.AmountKnown {
+		return "no amount on receipt"
+	}
+	return fmt.Sprintf("amount diff %.1f%%", cs.AmountDiffPct)
+}
+
+func describeDate(cs *domain.CandidateScores) string {
+	if !cs.DateKnown {
+		return "no date on receipt"
+	}
+	return fmt.Sprintf("date diff %d days", cs.DateDiffDays)
 }
 
 func (s *MatchingService) cacheAlias(ctx context.Context, receiptMerchant, txMerchant, txName string) {
