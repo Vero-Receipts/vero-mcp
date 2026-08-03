@@ -840,7 +840,22 @@ func (s *ReceiptService) Match(ctx context.Context, userID, receiptID uuid.UUID,
 	if err := s.matchRepo.Create(ctx, match); err != nil {
 		return err
 	}
-	return s.receiptRepo.UpdateStatus(ctx, receiptID, "matched")
+	if err := s.receiptRepo.UpdateStatus(ctx, receiptID, "matched"); err != nil {
+		return err
+	}
+
+	// Both sides are settled, so retire the proposals naming either of them.
+	// The read path filters these out regardless, but leaving them behind
+	// would resurrect stale guesses the moment a receipt is unmatched.
+	if s.suggestionRepo != nil {
+		if err := s.suggestionRepo.DeleteForReceipt(ctx, receiptID); err != nil {
+			slog.Error("match: clear receipt suggestions", "error", err, "receipt_id", receiptID)
+		}
+		if err := s.suggestionRepo.DeleteForTransaction(ctx, transactionID); err != nil {
+			slog.Error("match: clear transaction suggestions", "error", err, "tx_id", transactionID)
+		}
+	}
+	return nil
 }
 
 // SuggestMatches runs the matching pipeline over every unmatched receipt,

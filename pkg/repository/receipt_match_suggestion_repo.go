@@ -25,6 +25,22 @@ var rmsCols = []string{
 	"flag", "COALESCE(reason, '')", "rank", "llm_used", "created_at", "rejected_at",
 }
 
+// pendingOnly narrows to proposals still awaiting a decision.
+//
+// Two things disqualify a row. The user having already dismissed it is the
+// obvious one. The other is the receipt having been settled against some
+// transaction in the meantime: a receipt that is spoken for must not be
+// offered anywhere else, and enforcing that here rather than at each write
+// keeps it true no matter which path did the settling — manual links and
+// recurring propagation both create matches without touching this table.
+func pendingOnly(qb sq.SelectBuilder) sq.SelectBuilder {
+	return qb.
+		Where("rejected_at IS NULL").
+		Where(`NOT EXISTS (
+			SELECT 1 FROM receipt_matches rm
+			WHERE rm.receipt_id = receipt_match_suggestions.receipt_id)`)
+}
+
 // ReplaceForReceipt swaps in a fresh set of proposals for one receipt.
 //
 // Rejected pairs are left untouched: the user's "not a match" is a durable
@@ -79,10 +95,9 @@ func (r *ReceiptMatchSuggestionRepo) ReplaceForReceipt(ctx context.Context, rece
 
 // FindByReceiptID returns a receipt's pending proposals, best first.
 func (r *ReceiptMatchSuggestionRepo) FindByReceiptID(ctx context.Context, receiptID uuid.UUID) ([]domain.ReceiptMatchSuggestion, error) {
-	rows, err := r.SQ.Select(rmsCols...).
+	rows, err := pendingOnly(r.SQ.Select(rmsCols...).
 		From("receipt_match_suggestions").
-		Where(sq.Eq{"receipt_id": receiptID.String()}).
-		Where("rejected_at IS NULL").
+		Where(sq.Eq{"receipt_id": receiptID.String()})).
 		OrderBy("rank ASC", "composite_score DESC").
 		QueryContext(ctx)
 	if err != nil {
@@ -95,10 +110,9 @@ func (r *ReceiptMatchSuggestionRepo) FindByReceiptID(ctx context.Context, receip
 // FindByTransactionID returns the pending proposals pointing at one
 // transaction, best first.
 func (r *ReceiptMatchSuggestionRepo) FindByTransactionID(ctx context.Context, txID string) ([]domain.ReceiptMatchSuggestion, error) {
-	rows, err := r.SQ.Select(rmsCols...).
+	rows, err := pendingOnly(r.SQ.Select(rmsCols...).
 		From("receipt_match_suggestions").
-		Where(sq.Eq{"transaction_id": txID}).
-		Where("rejected_at IS NULL").
+		Where(sq.Eq{"transaction_id": txID})).
 		OrderBy("composite_score DESC").
 		QueryContext(ctx)
 	if err != nil {
@@ -109,10 +123,9 @@ func (r *ReceiptMatchSuggestionRepo) FindByTransactionID(ctx context.Context, tx
 }
 
 func (r *ReceiptMatchSuggestionRepo) FindPair(ctx context.Context, receiptID uuid.UUID, txID string) (*domain.ReceiptMatchSuggestion, error) {
-	row := r.SQ.Select(rmsCols...).
+	row := pendingOnly(r.SQ.Select(rmsCols...).
 		From("receipt_match_suggestions").
-		Where(sq.Eq{"receipt_id": receiptID.String(), "transaction_id": txID}).
-		Where("rejected_at IS NULL").
+		Where(sq.Eq{"receipt_id": receiptID.String(), "transaction_id": txID})).
 		QueryRowContext(ctx)
 
 	s, err := r.scanOne(row)
@@ -167,10 +180,9 @@ func (r *ReceiptMatchSuggestionRepo) DeleteForTransaction(ctx context.Context, t
 // the proposals themselves — the user reviews receipts, not pairs).
 func (r *ReceiptMatchSuggestionRepo) CountPendingByUser(ctx context.Context, userID uuid.UUID) (int, error) {
 	var count int
-	err := r.SQ.Select("COUNT(DISTINCT receipt_id)").
+	err := pendingOnly(r.SQ.Select("COUNT(DISTINCT receipt_id)").
 		From("receipt_match_suggestions").
-		Where(sq.Eq{"user_id": userID.String()}).
-		Where("rejected_at IS NULL").
+		Where(sq.Eq{"user_id": userID.String()})).
 		QueryRowContext(ctx).
 		Scan(&count)
 	return count, err

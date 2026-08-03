@@ -195,7 +195,8 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 
 	const hasPendingSuggestion = `EXISTS (
 		SELECT 1 FROM receipt_match_suggestions s
-		WHERE s.transaction_id = t.transaction_id AND s.rejected_at IS NULL)`
+		WHERE s.transaction_id = t.transaction_id AND s.rejected_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM receipt_matches rm WHERE rm.receipt_id = s.receipt_id))`
 
 	// applyBase applies the user scope + filters to a query over the
 	// transaction grain (no receipt join), so counts and the page-id lookup
@@ -262,6 +263,7 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 		FROM receipt_match_suggestions s
 		JOIN receipts sr ON sr.id = s.receipt_id
 		WHERE s.rejected_at IS NULL AND s.user_id = ?
+		  AND NOT EXISTS (SELECT 1 FROM receipt_matches rm WHERE rm.receipt_id = s.receipt_id)
 	) sg ON sg.transaction_id = t.transaction_id AND sg.rn = 1`
 
 	qb := r.SQ.Select(cols...).
