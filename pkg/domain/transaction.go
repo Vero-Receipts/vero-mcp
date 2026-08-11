@@ -120,20 +120,24 @@ type AttachedReceipt struct {
 
 // TransactionFilter holds optional API query parameters for filtering the transaction list.
 type TransactionFilter struct {
-	Search      string   // ILIKE on name / merchant_name
-	DateFrom    string   // YYYY-MM-DD
-	DateTo      string   // YYYY-MM-DD
-	AmountMin   *float64 // minimum absolute amount
-	AmountMax   *float64 // maximum absolute amount
-	Category    string   // substring match inside the category JSON array
-	PFCPrimary  string   // exact (case-insensitive) match on pfc_primary
-	PFCDetailed string   // exact (case-insensitive) match on pfc_detailed
-	Matched     string   // "matched", "unmatched", or "" for all
-	Pending     string   // "true", "false", or "" for all
-	SortBy      string   // "date", "amount", "merchant", "name" (default: "date")
-	SortOrder   string   // "asc" or "desc" (default: "desc")
-	Limit       int      // page size; when > 0 the query is paginated
-	Offset      int      // page offset; ignored unless Limit > 0
+	// TransactionID pins the query to one Plaid transaction id. Distinct from
+	// Search, which only matches name / merchant_name — this is how a detail
+	// view fetches a single row without paging the whole list.
+	TransactionID string
+	Search        string   // ILIKE on name / merchant_name
+	DateFrom      string   // YYYY-MM-DD
+	DateTo        string   // YYYY-MM-DD
+	AmountMin     *float64 // minimum absolute amount
+	AmountMax     *float64 // maximum absolute amount
+	Category      string   // substring match inside the category JSON array
+	PFCPrimary    string   // exact (case-insensitive) match on pfc_primary
+	PFCDetailed   string   // exact (case-insensitive) match on pfc_detailed
+	Matched       string   // "matched", "unmatched", or "" for all
+	Pending       string   // "true", "false", or "" for all
+	SortBy        string   // "date", "amount", "merchant", "name" (default: "date")
+	SortOrder     string   // "asc" or "desc" (default: "desc")
+	Limit         int      // page size; when > 0 the query is paginated
+	Offset        int      // page offset; ignored unless Limit > 0
 }
 
 // TransactionResponse is what the API returns to clients (camelCase).
