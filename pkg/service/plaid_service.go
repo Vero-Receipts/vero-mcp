@@ -763,36 +763,7 @@ func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, f
 
 	txs := make([]domain.TransactionResponse, 0, len(rows))
 	for _, row := range rows {
-		var cats []string
-		_ = json.Unmarshal(row.Category, &cats)
-
-		var mName, mLogo *string
-		if row.Merchant != nil {
-			n := row.Merchant.CanonicalName
-			mName = &n
-			mLogo = row.Merchant.LogoCDNURL
-		}
-		resp := domain.TransactionResponse{
-			ID:                   row.TransactionID,
-			AccountID:            row.AccountID,
-			Amount:               row.Amount,
-			Date:                 row.Date,
-			DateTime:             row.DateTime,
-			Name:                 row.Name,
-			MerchantName:         mName,
-			Category:             cats,
-			PFCPrimary:           row.PFCPrimary,
-			PFCDetailed:          row.PFCDetailed,
-			PaymentChannel:       row.PaymentChannel,
-			Pending:              row.Pending,
-			Recurring:            row.Recurring,
-			MerchantLogo:         mLogo,
-			CorrectedPFCPrimary:  row.CorrectedPFCPrimary,
-			CorrectedPFCDetailed: row.CorrectedPFCDetailed,
-			Receipt:              row.Receipt,
-			SuggestedReceipt:     row.Suggested,
-		}
-		txs = append(txs, resp)
+		txs = append(txs, transactionRowToResponse(row))
 	}
 
 	result := &SyncResult{Transactions: txs, Total: total, TotalSpent: totalSpent}
@@ -802,6 +773,63 @@ func (s *PlaidService) ListTransactions(ctx context.Context, userID uuid.UUID, f
 		result.HasMore = filter.Offset+len(txs) < total
 	}
 	return result, nil
+}
+
+// GetTransaction returns a single transaction, enriched exactly as the list
+// endpoint enriches its rows (merchant, matched receipt, best pending
+// suggestion). Returns domain.ErrNotFound when the id doesn't exist or belongs
+// to another user — the two are deliberately indistinguishable to the caller so
+// this can't be used to probe for other users' transaction ids.
+func (s *PlaidService) GetTransaction(ctx context.Context, userID uuid.UUID, transactionID string) (*domain.TransactionResponse, error) {
+	if transactionID == "" {
+		return nil, domain.ErrNotFound
+	}
+	rows, _, _, err := s.txCacheRepo.FindByUserIDWithReceipts(ctx, userID, domain.TransactionFilter{
+		TransactionID: transactionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, domain.ErrNotFound
+	}
+	resp := transactionRowToResponse(rows[0])
+	return &resp, nil
+}
+
+// transactionRowToResponse flattens a joined cache row into the camelCase shape
+// clients consume. Shared by ListTransactions and GetTransaction so a single
+// transaction never drifts from its list representation.
+func transactionRowToResponse(row domain.TransactionWithReceipt) domain.TransactionResponse {
+	var cats []string
+	_ = json.Unmarshal(row.Category, &cats)
+
+	var mName, mLogo *string
+	if row.Merchant != nil {
+		n := row.Merchant.CanonicalName
+		mName = &n
+		mLogo = row.Merchant.LogoCDNURL
+	}
+	return domain.TransactionResponse{
+		ID:                   row.TransactionID,
+		AccountID:            row.AccountID,
+		Amount:               row.Amount,
+		Date:                 row.Date,
+		DateTime:             row.DateTime,
+		Name:                 row.Name,
+		MerchantName:         mName,
+		Category:             cats,
+		PFCPrimary:           row.PFCPrimary,
+		PFCDetailed:          row.PFCDetailed,
+		PaymentChannel:       row.PaymentChannel,
+		Pending:              row.Pending,
+		Recurring:            row.Recurring,
+		MerchantLogo:         mLogo,
+		CorrectedPFCPrimary:  row.CorrectedPFCPrimary,
+		CorrectedPFCDetailed: row.CorrectedPFCDetailed,
+		Receipt:              row.Receipt,
+		SuggestedReceipt:     row.Suggested,
+	}
 }
 
 // rematchUnmatchedReceipts runs LLM-based matching for all unmatched receipts

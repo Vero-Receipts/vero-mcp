@@ -868,6 +868,9 @@ func (r *TransactionCacheRepo) scanTransactions(rows *sql.Rows) ([]domain.Transa
 // All filters reference the aliased tables: t. for transactions, m. for merchants.
 
 func applyTransactionFiltersSQ(qb sq.SelectBuilder, f domain.TransactionFilter) sq.SelectBuilder {
+	if f.TransactionID != "" {
+		qb = qb.Where(sq.Eq{"t.transaction_id": f.TransactionID})
+	}
 	if f.Search != "" {
 		like := "%" + f.Search + "%"
 		qb = qb.Where(sq.Or{
