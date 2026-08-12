@@ -156,12 +156,20 @@ func (s *OpenAIService) ParseImage(ctx context.Context, filePath string) *domain
 
 // ParseImageData sends the receipt image bytes to GPT-5-Mini Vision and returns a structured OCRResult.
 func (s *OpenAIService) ParseImageData(ctx context.Context, imageBytes []byte, mimeType string) *domain.OCRResult {
+	return s.ParseImageDataWithContext(ctx, imageBytes, mimeType, TextSection{})
+}
+
+// ParseImageDataWithContext sends the receipt image alongside a secondary text
+// source describing the SAME transaction (e.g. the email body the image arrived
+// in), so items present only in that text are not lost. A blank supplement
+// makes this exactly ParseImageData.
+func (s *OpenAIService) ParseImageDataWithContext(ctx context.Context, imageBytes []byte, mimeType string, supplement TextSection) *domain.OCRResult {
 	if s.apiKey == "" {
 		slog.Warn("[OpenAI] no OPENAI_API_KEY configured, skipping receipt parsing")
 		return &domain.OCRResult{Error: "OpenAI API key not configured"}
 	}
 
-	bodyBytes, err := BuildImageReceiptRequest(imageBytes, mimeType)
+	bodyBytes, err := BuildImageReceiptRequestWithContext(imageBytes, mimeType, supplement)
 	if err != nil {
 		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
 	}
@@ -192,9 +200,48 @@ func derefFloat(v *float64) float64 {
 // vision-based receipt parsing. Exported so callers (e.g. the OpenAI Batch API
 // path) can produce identical request payloads without sending them inline.
 func BuildImageReceiptRequest(imageBytes []byte, mimeType string) ([]byte, error) {
+	return BuildImageReceiptRequestWithContext(imageBytes, mimeType, TextSection{})
+}
+
+// BuildImageReceiptRequestWithContext builds the vision request with an optional
+// secondary text source appended as an extra content block after the image —
+// used when a receipt image arrives in an email whose body carries part of the
+// itemization. The image remains the primary source. With a blank supplement
+// the emitted request is byte-identical to BuildImageReceiptRequest, so
+// captured image goldens remain valid.
+func BuildImageReceiptRequestWithContext(imageBytes []byte, mimeType string, supplement TextSection) ([]byte, error) {
 	base64Image := base64.StdEncoding.EncodeToString(imageBytes)
 
 	schema := receiptJSONSchema()
+
+	prompt := imageReceiptPrompt()
+	supplementText := strings.TrimSpace(supplement.Text)
+	if supplementText != "" {
+		prompt += mergedSourcesImageInstructions
+	}
+
+	content := []map[string]interface{}{
+		{
+			"type": "text",
+			"text": prompt,
+		},
+		{
+			"type": "image_url",
+			"image_url": map[string]string{
+				"url": fmt.Sprintf("data:%s;base64,%s", mimeType, base64Image),
+			},
+		},
+	}
+	if supplementText != "" {
+		label := supplement.Label
+		if label == "" {
+			label = "Additional text"
+		}
+		content = append(content, map[string]interface{}{
+			"type": "text",
+			"text": fmt.Sprintf("--- %s ---\n%s", label, clampReceiptText(supplementText, receiptSecondaryTextBudget)),
+		})
+	}
 
 	reqBody := map[string]interface{}{
 		"model": "gpt-5-mini",
@@ -206,19 +253,8 @@ func BuildImageReceiptRequest(imageBytes []byte, mimeType string) ([]byte, error
 		"reasoning_effort": "minimal",
 		"messages": []map[string]interface{}{
 			{
-				"role": "user",
-				"content": []map[string]interface{}{
-					{
-						"type": "text",
-						"text": imageReceiptPrompt(),
-					},
-					{
-						"type": "image_url",
-						"image_url": map[string]string{
-							"url": fmt.Sprintf("data:%s;base64,%s", mimeType, base64Image),
-						},
-					},
-				},
+				"role":    "user",
+				"content": content,
 			},
 		},
 		"response_format": map[string]interface{}{
@@ -452,17 +488,27 @@ func consolidateLineItems(items []domain.LineItem) []domain.LineItem {
 // call that host applications use for email-body receipt parsing.
 // The method is exported so that wrapper applications can call it directly.
 func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contextLabel string, receivedAt *time.Time) *domain.OCRResult {
+	return s.ParseTextSectionsAsReceipt(ctx, []TextSection{{Text: bodyText}}, contextLabel, receivedAt)
+}
+
+// ParseTextSectionsAsReceipt sends one or more labeled text sources that all
+// describe the SAME transaction (e.g. a PDF attachment and the email body it
+// arrived in) for a single merged receipt extraction. With one section this is
+// exactly ParseTextAsReceipt.
+func (s *OpenAIService) ParseTextSectionsAsReceipt(ctx context.Context, sections []TextSection, contextLabel string, receivedAt *time.Time) *domain.OCRResult {
 	if s.apiKey == "" {
 		return &domain.OCRResult{Error: "OpenAI API key not configured"}
 	}
 
-	slog.Info("[OpenAI] parsing text for receipt data", "context", contextLabel)
+	slog.Info("[OpenAI] parsing text for receipt data", "context", contextLabel, "sources", len(sections))
 
-	if len(bodyText) > 8000 && strings.Count(bodyText[:8000], "{") > 20 && strings.Count(bodyText[:8000], "}") > 20 {
-		slog.Warn("[OpenAI] text appears to still contain CSS, truncating", "context", contextLabel)
+	for _, sec := range sections {
+		if len(sec.Text) > 8000 && strings.Count(sec.Text[:8000], "{") > 20 && strings.Count(sec.Text[:8000], "}") > 20 {
+			slog.Warn("[OpenAI] text appears to still contain CSS, truncating", "context", contextLabel, "source", sec.Label)
+		}
 	}
 
-	bodyBytes, err := BuildTextReceiptRequest(bodyText, contextLabel, receivedAt)
+	bodyBytes, err := BuildTextReceiptRequestSections(sections, contextLabel, receivedAt)
 	if err != nil {
 		return &domain.OCRResult{Error: fmt.Sprintf("marshal request: %v", err)}
 	}
@@ -480,6 +526,28 @@ func (s *OpenAIService) ParseTextAsReceipt(ctx context.Context, bodyText, contex
 	}
 	return result
 }
+
+// TextSection is one labeled block of text describing a transaction. Several
+// sections are merged into a single extraction request when more than one place
+// in the same message describes the same transaction — most often a PDF
+// attachment and the email body it arrived in, where the attachment carries the
+// totals and the body carries the itemization.
+type TextSection struct {
+	Label string // e.g. "Attached document: invoice.pdf", "Email body"
+	Text  string
+}
+
+const (
+	// receiptTextTotalBudget is the combined character budget across all
+	// sections — the same cap the single-text path has always applied.
+	receiptTextTotalBudget = 8000
+	// receiptSecondaryTextBudget caps each non-primary section so a long, noisy
+	// email body cannot crowd out the authoritative attachment text.
+	receiptSecondaryTextBudget = 2000
+	// receiptPrimaryTextFloor is the minimum the primary section keeps even when
+	// the secondary sections consume their full budget.
+	receiptPrimaryTextFloor = 4000
+)
 
 // receiptTotalAnchors are keywords used to locate the "total" region of receipt
 // text so truncation preserves the items section rather than front-truncating.
@@ -525,15 +593,113 @@ func anchoredTruncate(text string, maxLen int) string {
 // plus an aggressive 4000-char truncation if the text still contains CSS-like
 // `{`/`}` clusters (a sign that HTML stripping missed style blocks).
 func BuildTextReceiptRequest(bodyText, contextLabel string, receivedAt *time.Time) ([]byte, error) {
-	if len(bodyText) > 8000 {
-		if strings.Count(bodyText, "{") > 20 && strings.Count(bodyText, "}") > 20 {
-			// CSS-like content survived HTML stripping — use anchor-aware
-			// truncation so the items table is preserved over header content.
-			bodyText = anchoredTruncate(bodyText, 4000)
-		} else {
-			bodyText = bodyText[:8000]
+	return BuildTextReceiptRequestSections([]TextSection{{Text: bodyText}}, contextLabel, receivedAt)
+}
+
+// clampReceiptText applies the receipt-text length guards to a single section: a
+// hard character budget, plus anchor-aware truncation to half the budget when
+// the text still contains CSS-like `{`/`}` clusters (a sign HTML stripping
+// missed style blocks). At budget=8000 this is exactly the guard
+// BuildTextReceiptRequest has always applied.
+func clampReceiptText(text string, budget int) string {
+	if len(text) <= budget {
+		return text
+	}
+	if strings.Count(text, "{") > 20 && strings.Count(text, "}") > 20 {
+		return anchoredTruncate(text, budget/2)
+	}
+	return text[:budget]
+}
+
+// clampSections applies per-section budgets BEFORE concatenation, so a single
+// combined cap can never truncate a later section away entirely. Secondary
+// sections are clamped first and the primary section takes whatever is left of
+// the total budget — so when the secondary text is short or absent, the primary
+// keeps the full budget it would have had on its own.
+func clampSections(sections []TextSection) []TextSection {
+	out := make([]TextSection, len(sections))
+	used := 0
+	for i := len(sections) - 1; i >= 1; i-- {
+		out[i] = TextSection{
+			Label: sections[i].Label,
+			Text:  clampReceiptText(sections[i].Text, receiptSecondaryTextBudget),
+		}
+		used += len(out[i].Text)
+	}
+	primaryBudget := receiptTextTotalBudget - used
+	if primaryBudget < receiptPrimaryTextFloor {
+		primaryBudget = receiptPrimaryTextFloor
+	}
+	out[0] = TextSection{
+		Label: sections[0].Label,
+		Text:  clampReceiptText(sections[0].Text, primaryBudget),
+	}
+	return out
+}
+
+// mergedSourcesInstructions are appended to the standard instruction list only
+// when more than one source is present. They exist to counter three behaviours
+// observed on multi-source input: the model dropping items that appear in only
+// one source to keep the item total consistent with the stated subtotal, the
+// model listing a shared item once per source (which consolidateLineItems then
+// merges by SUMMING quantity and price, silently doubling it), and the
+// secondary source overriding the attachment's merchant or totals.
+const mergedSourcesInstructions = `
+- This text contains more than one source (e.g. an attached document and the email body it arrived in) describing the SAME transaction. Extract ONE receipt covering all of them, taking the merchant, date, and amounts from the first source listed when the sources disagree.
+- Include every purchased item from every source, even if that means the line items no longer add up to the subtotal or total. Do not change the subtotal, tax, tip, or total to make them reconcile, and do not drop an item to make them reconcile.
+- An item restated in another source is still ONE line item — list it exactly once. This de-duplication applies only ACROSS sources: when a single source legitimately lists the same product on several lines, those are separate purchases, and the quantity and total price you report must cover all of them.`
+
+// mergedSourcesImageInstructions is the vision-prompt counterpart of
+// mergedSourcesInstructions, appended only when a supplementary text source
+// accompanies the image.
+const mergedSourcesImageInstructions = `
+- A text source follows this image (the body of the email the image arrived in) describing the SAME transaction. Extract ONE receipt covering both, taking the merchant, date, and amounts from the image when the two disagree.
+- Include every purchased item from both sources, even if that means the line items no longer add up to the subtotal or total. Do not change the subtotal, tax, tip, or total to make them reconcile, and do not drop an item to make them reconcile.
+- An item restated in the text source is still ONE line item — list it exactly once. This de-duplication applies only ACROSS the two sources: when the receipt itself rings the same product up on several lines, those are separate purchases, and the quantity and total price you report must cover all of them.`
+
+// renderTextSections joins sections for substitution into the prompt's `Text:`
+// slot. A single section renders as bare text, exactly as it always has, so the
+// one-source request stays byte-identical.
+func renderTextSections(sections []TextSection) string {
+	if len(sections) == 1 {
+		return sections[0].Text
+	}
+	var b strings.Builder
+	for i, sec := range sections {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		label := sec.Label
+		if label == "" {
+			label = fmt.Sprintf("Source %d", i+1)
+		}
+		fmt.Fprintf(&b, "--- %s ---\n%s", label, sec.Text)
+	}
+	return b.String()
+}
+
+// BuildTextReceiptRequestSections builds one chat-completions request from one
+// or more labeled sources that all describe the SAME transaction. sections[0]
+// is treated as authoritative for the totals and merchant identity; later
+// sections may only contribute additional line items and fields the primary
+// source omits.
+//
+// Sections whose text is blank are dropped. With a single section the emitted
+// request is byte-identical to the long-standing single-text request, so
+// captured goldens remain valid.
+func BuildTextReceiptRequestSections(sections []TextSection, contextLabel string, receivedAt *time.Time) ([]byte, error) {
+	kept := make([]TextSection, 0, len(sections))
+	for _, sec := range sections {
+		if strings.TrimSpace(sec.Text) != "" {
+			kept = append(kept, sec)
 		}
 	}
+	if len(kept) == 0 {
+		// Preserve the historical behaviour for empty input: one empty section.
+		kept = []TextSection{{}}
+	}
+	kept = clampSections(kept)
+	bodyText := renderTextSections(kept)
 
 	prompt := fmt.Sprintf(`Extract receipt/invoice data from this text.
 
@@ -555,6 +721,10 @@ Instructions:
 - For times, use HH:MM format (24-hour)
 - All monetary amounts should be numbers (not strings)
 - The merchant name should be the actual BUSINESS name, not the payment processor — if "Stripe", "Square", "PayPal", or similar appears as the sender, use the underlying merchant name instead`, contextLabel, bodyText)
+
+	if len(kept) > 1 {
+		prompt += mergedSourcesInstructions
+	}
 
 	if receivedAt != nil {
 		prompt += fmt.Sprintf(`

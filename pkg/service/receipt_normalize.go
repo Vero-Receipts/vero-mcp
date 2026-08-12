@@ -34,18 +34,28 @@ const OCRErrPDFEncrypted = "pdf_encrypted"
 // mimeType, because upload Content-Type headers and file extensions are
 // unreliable. mimeType is used only as a hint for non-HEIC/PDF images.
 func (s *OpenAIService) PrepareReceiptForOCR(ctx context.Context, data []byte, mimeType string) (renderBytes []byte, renderMime string, ocr *domain.OCRResult) {
+	return s.PrepareReceiptForOCRWithContext(ctx, data, mimeType, TextSection{})
+}
+
+// PrepareReceiptForOCRWithContext is PrepareReceiptForOCR with an optional
+// secondary text source describing the same transaction — the body of the email
+// the receipt arrived in, whose itemization is often richer than the attachment
+// itself. The supplement reaches whichever OCR route the format takes: it
+// becomes a second text section on the PDF text path, and an extra content
+// block on every vision path. A blank supplement leaves behaviour unchanged.
+func (s *OpenAIService) PrepareReceiptForOCRWithContext(ctx context.Context, data []byte, mimeType string, supplement TextSection) (renderBytes []byte, renderMime string, ocr *domain.OCRResult) {
 	switch detectReceiptFormat(data, mimeType) {
 	case "application/pdf":
-		return s.preparePDFForOCR(ctx, data)
+		return s.preparePDFForOCR(ctx, data, supplement)
 	case "image/heic":
 		jpegBytes, err := heicToJPEG(ctx, data)
 		if err != nil {
 			slog.Warn("[OCR] heic->jpeg conversion failed", "error", err)
 			return data, mimeType, &domain.OCRResult{Error: fmt.Sprintf("heic conversion failed: %v", err)}
 		}
-		return jpegBytes, "image/jpeg", s.ParseImageData(ctx, jpegBytes, "image/jpeg")
+		return jpegBytes, "image/jpeg", s.ParseImageDataWithContext(ctx, jpegBytes, "image/jpeg", supplement)
 	default:
-		return data, mimeType, s.ParseImageData(ctx, data, mimeType)
+		return data, mimeType, s.ParseImageDataWithContext(ctx, data, mimeType, supplement)
 	}
 }
 
@@ -73,7 +83,7 @@ func detectReceiptFormat(data []byte, declaredMime string) string {
 
 // preparePDFForOCR rasterizes the first PDF page for a displayable render, then
 // runs OCR via text extraction (preferred) or vision on the rasterized page.
-func (s *OpenAIService) preparePDFForOCR(ctx context.Context, data []byte) ([]byte, string, *domain.OCRResult) {
+func (s *OpenAIService) preparePDFForOCR(ctx context.Context, data []byte, supplement TextSection) ([]byte, string, *domain.OCRResult) {
 	tmp, err := os.CreateTemp("", "receipt-*.pdf")
 	if err != nil {
 		return data, "application/pdf", &domain.OCRResult{Error: fmt.Sprintf("temp pdf: %v", err)}
@@ -106,13 +116,18 @@ func (s *OpenAIService) preparePDFForOCR(ctx context.Context, data []byte) ([]by
 		slog.Warn("[OCR] pdftotext failed, falling back to vision", "error", err)
 	}
 	if strings.TrimSpace(text) != "" {
-		slog.Info("[OCR] parsing PDF via text extraction", "text_length", len(text))
-		return render, renderMime, s.ParseTextAsReceipt(ctx, text, "", nil)
+		slog.Info("[OCR] parsing PDF via text extraction",
+			"text_length", len(text), "merged_source", strings.TrimSpace(supplement.Text) != "")
+		sections := []TextSection{{Label: "Attached document", Text: text}}
+		if strings.TrimSpace(supplement.Text) != "" {
+			sections = append(sections, supplement)
+		}
+		return render, renderMime, s.ParseTextSectionsAsReceipt(ctx, sections, "", nil)
 	}
 
 	if renderMime == "image/png" {
 		slog.Info("[OCR] PDF text empty, parsing rasterized page via vision")
-		return render, renderMime, s.ParseImageData(ctx, render, "image/png")
+		return render, renderMime, s.ParseImageDataWithContext(ctx, render, "image/png", supplement)
 	}
 	return render, renderMime, &domain.OCRResult{Error: "pdf has no extractable text and rasterization failed"}
 }

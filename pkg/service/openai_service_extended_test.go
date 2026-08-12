@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -794,5 +795,231 @@ func TestBuildTextReceiptRequest_CSSHeavyTextTruncated(t *testing.T) {
 	prompt := extractPromptText(t, reqBytes)
 	if strings.Contains(prompt, sentinel) {
 		t.Error("expected sentinel after 8000 chars to be truncated for CSS-heavy input")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multi-source (merged) receipt requests
+// ---------------------------------------------------------------------------
+
+// contentBlocks unmarshals a request body and returns the raw content blocks of
+// messages[0], so tests can assert block count, order, and type.
+func contentBlocks(t *testing.T, reqBytes []byte) []struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+} {
+	t.Helper()
+	var body struct {
+		Messages []struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(reqBytes, &body); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if len(body.Messages) == 0 {
+		t.Fatal("no messages in request")
+	}
+	return body.Messages[0].Content
+}
+
+// TestBuildTextReceiptRequest_SingleSectionIdenticalToSections is the
+// backward-compatibility guard: a one-section request must be byte-identical to
+// the long-standing single-text request, which is what keeps every captured
+// golden valid and external callers unaffected.
+func TestBuildTextReceiptRequest_SingleSectionIdenticalToSections(t *testing.T) {
+	receivedAt := time.Date(2025, 3, 20, 0, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name       string
+		text       string
+		label      string
+		receivedAt *time.Time
+	}{
+		{"plain", "Receipt text here", "Email from Stripe", nil},
+		{"with received at", "Receipt text here", "label", &receivedAt},
+		{"long", strings.Repeat("x", 9000), "label", nil},
+		{"css heavy", strings.Repeat("{color:red;}", 668), "label", nil},
+		{"empty", "", "label", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			old, err := BuildTextReceiptRequest(tt.text, tt.label, tt.receivedAt)
+			if err != nil {
+				t.Fatalf("BuildTextReceiptRequest: %v", err)
+			}
+			// A labeled single section must also render bare — the label is
+			// only meaningful once there is a second source to distinguish.
+			neu, err := BuildTextReceiptRequestSections(
+				[]TextSection{{Label: "Attached document: invoice.pdf", Text: tt.text}}, tt.label, tt.receivedAt)
+			if err != nil {
+				t.Fatalf("BuildTextReceiptRequestSections: %v", err)
+			}
+			if !bytes.Equal(old, neu) {
+				t.Error("single-section request differs from the single-text request")
+			}
+		})
+	}
+}
+
+// TestBuildImageReceiptRequest_NoSupplementIdentical is the same guard for the
+// vision builder.
+func TestBuildImageReceiptRequest_NoSupplementIdentical(t *testing.T) {
+	img := []byte{0x89, 'P', 'N', 'G', 1, 2, 3, 4}
+	old, err := BuildImageReceiptRequest(img, "image/png")
+	if err != nil {
+		t.Fatalf("BuildImageReceiptRequest: %v", err)
+	}
+	for _, supplement := range []TextSection{{}, {Label: "Email body"}, {Label: "Email body", Text: "   \n\t "}} {
+		neu, err := BuildImageReceiptRequestWithContext(img, "image/png", supplement)
+		if err != nil {
+			t.Fatalf("BuildImageReceiptRequestWithContext: %v", err)
+		}
+		if !bytes.Equal(old, neu) {
+			t.Errorf("blank supplement %+v changed the request", supplement)
+		}
+	}
+}
+
+func TestBuildTextReceiptRequestSections_BothSectionsPresent(t *testing.T) {
+	reqBytes, err := BuildTextReceiptRequestSections([]TextSection{
+		{Label: "Attached document: invoice.pdf", Text: "Total $42.00 PDF_SENTINEL"},
+		{Label: "Email body", Text: "1x Widget $42.00 BODY_SENTINEL"},
+	}, "Email Subject: Your receipt", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := extractPromptText(t, reqBytes)
+	for _, want := range []string{
+		"PDF_SENTINEL",
+		"BODY_SENTINEL",
+		"--- Attached document: invoice.pdf ---",
+		"--- Email body ---",
+		// The merge bullets.
+		"describing the SAME transaction",
+		"no longer add up to the subtotal or total",
+		"list it exactly once",
+		// The original prompt must survive intact alongside them.
+		"Extract receipt/invoice data from this text.",
+		"- Extract the merchant name, address, transaction date, and time",
+		"use the underlying merchant name instead",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+// TestBuildTextReceiptRequestSections_SecondSectionSurvivesLongPrimary is the
+// direct regression test for the reported bug: a long attachment must not push
+// the email body — the only place some line items appear — out of the prompt.
+func TestBuildTextReceiptRequestSections_SecondSectionSurvivesLongPrimary(t *testing.T) {
+	reqBytes, err := BuildTextReceiptRequestSections([]TextSection{
+		{Label: "Attached document", Text: strings.Repeat("x", 20000)},
+		{Label: "Email body", Text: "1x Widget $42.00 BODY_ONLY_ITEM"},
+	}, "label", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := extractPromptText(t, reqBytes)
+	if !strings.Contains(prompt, "BODY_ONLY_ITEM") {
+		t.Error("body section was truncated away by a long attachment section")
+	}
+}
+
+func TestBuildTextReceiptRequestSections_SecondaryCappedAt2000(t *testing.T) {
+	body := strings.Repeat("b", 2000) + "SENTINEL_BEYOND_SECONDARY_BUDGET"
+	reqBytes, err := BuildTextReceiptRequestSections([]TextSection{
+		{Label: "Attached document", Text: "Total $42.00 PDF_SENTINEL"},
+		{Label: "Email body", Text: body},
+	}, "label", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := extractPromptText(t, reqBytes)
+	if strings.Contains(prompt, "SENTINEL_BEYOND_SECONDARY_BUDGET") {
+		t.Error("secondary section exceeded its 2000-char budget")
+	}
+	if !strings.Contains(prompt, "PDF_SENTINEL") {
+		t.Error("primary section should be untouched by a long secondary")
+	}
+}
+
+func TestBuildTextReceiptRequestSections_CSSHeavyBodyAnchored(t *testing.T) {
+	// >2000 chars with >20 braces triggers anchored truncation of the secondary.
+	cssBody := strings.Repeat("{color:red;}", 200) + "SENTINEL_PAST_ANCHOR_WINDOW"
+	reqBytes, err := BuildTextReceiptRequestSections([]TextSection{
+		{Label: "Attached document", Text: "Total $42.00 PDF_SENTINEL"},
+		{Label: "Email body", Text: cssBody},
+	}, "label", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := extractPromptText(t, reqBytes)
+	if strings.Contains(prompt, "SENTINEL_PAST_ANCHOR_WINDOW") {
+		t.Error("expected CSS-heavy secondary to be anchor-truncated")
+	}
+	if !strings.Contains(prompt, "PDF_SENTINEL") {
+		t.Error("primary section should survive a CSS-heavy secondary")
+	}
+}
+
+// TestBuildTextReceiptRequestSections_SkipsEmptySections proves that a blank
+// email body costs nothing: the request collapses to the single-source form.
+func TestBuildTextReceiptRequestSections_SkipsEmptySections(t *testing.T) {
+	want, err := BuildTextReceiptRequest("Total $42.00", "label", nil)
+	if err != nil {
+		t.Fatalf("BuildTextReceiptRequest: %v", err)
+	}
+	got, err := BuildTextReceiptRequestSections([]TextSection{
+		{Label: "Attached document", Text: "Total $42.00"},
+		{Label: "Email body", Text: "  \n\t "},
+	}, "label", nil)
+	if err != nil {
+		t.Fatalf("BuildTextReceiptRequestSections: %v", err)
+	}
+	if !bytes.Equal(want, got) {
+		t.Error("a blank secondary section should render the single-source request")
+	}
+	if strings.Contains(extractPromptText(t, got), "--- ") {
+		t.Error("single remaining section should not be rendered with a source header")
+	}
+}
+
+func TestBuildImageReceiptRequestWithContext_AppendsBlockAfterImage(t *testing.T) {
+	img := []byte{0x89, 'P', 'N', 'G', 1, 2, 3, 4}
+	reqBytes, err := BuildImageReceiptRequestWithContext(img, "image/png",
+		TextSection{Label: "Email body", Text: "1x Widget $42.00 BODY_SENTINEL"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	blocks := contentBlocks(t, reqBytes)
+	if len(blocks) != 3 {
+		t.Fatalf("content blocks = %d, want 3", len(blocks))
+	}
+	for i, wantType := range []string{"text", "image_url", "text"} {
+		if blocks[i].Type != wantType {
+			t.Errorf("block %d type = %q, want %q", i, blocks[i].Type, wantType)
+		}
+	}
+	if !strings.Contains(blocks[2].Text, "BODY_SENTINEL") {
+		t.Error("supplement text missing from the trailing block")
+	}
+	if !strings.Contains(blocks[2].Text, "--- Email body ---") {
+		t.Error("supplement missing its source header")
+	}
+	// The image prompt must keep its original instructions and gain the merge
+	// bullets — the image stays the authoritative source.
+	if !strings.Contains(blocks[0].Text, "Analyze this receipt image") {
+		t.Error("original vision prompt was replaced rather than extended")
+	}
+	if !strings.Contains(blocks[0].Text, "taking the merchant, date, and amounts from the image") {
+		t.Error("vision merge instructions missing")
 	}
 }

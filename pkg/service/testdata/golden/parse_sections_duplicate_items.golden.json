@@ -1,0 +1,38 @@
+{
+  "request_sha256": "b154e0f7c2426a6cd4a74553de5f52386c73905b873cc8fbc10b266ac9433d69",
+  "response": {
+    "id": "chatcmpl-EC00ic0OCGS87pnQXcEmZ12U1r1nI",
+    "object": "chat.completion",
+    "created": 1786528684,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":false,\"lastFourDigits\":\"3005\",\"lineItems\":[{\"description\":\"Cappuccino\",\"quantity\":1,\"totalPrice\":5.75,\"unitPrice\":5.75},{\"description\":\"Almond Croissant\",\"quantity\":2,\"totalPrice\":9,\"unitPrice\":4.5}],\"merchantAddress\":\"300 Webster Street, Oakland, CA 94607\",\"merchantName\":\"Blue Bottle Coffee\",\"paymentMethod\":\"Amex\",\"subtotal\":14.75,\"tax\":1.33,\"tip\":0,\"total\":16.08,\"transactionDate\":\"2025-08-19\",\"transactionTime\":\"08:15\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1121,
+      "completion_tokens": 2774,
+      "total_tokens": 3895,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 2624,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}
