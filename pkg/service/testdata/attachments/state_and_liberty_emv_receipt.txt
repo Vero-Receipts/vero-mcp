@@ -1,0 +1,28 @@
+State and Liberty Clothing
+        Company
+              141 W Maple Road
+             Birmingham, Michigan
+                    48009
+                 +12489466131
+
+               ORDER #1559145
+
+
+   AUTHORIZED - VISA Debit/Credit
+            (Classic)
+                   $371.00
+             Visa ending in 2676
+
+
+     AUTH 026449
+        TID 277
+        AID A0000000031010
+ SOURCE Contactless
+
+         Cardholder Not Verified
+        2026-07-26 18:27:51 -0400
+
+ This supplemental receipt is provided to customers
+     who have paid with EMV chip credit cards.
+            Thank you for your business.
+

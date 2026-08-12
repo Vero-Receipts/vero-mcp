@@ -1,0 +1,38 @@
+{
+  "request_sha256": "ea8edd0e22093ee49a149dcd5f046f19d39b936a87ce78ccb21a052ff242eb89",
+  "response": {
+    "id": "chatcmpl-EC0fYikVK4mDm30DvqLIQbJps4ai5",
+    "object": "chat.completion",
+    "created": 1786531216,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":false,\"lastFourDigits\":\"2676\",\"lineItems\":[],\"merchantAddress\":\"141 W Maple Road, Birmingham, Michigan 48009\",\"merchantName\":\"State and Liberty Clothing Company\",\"paymentMethod\":\"Visa\",\"subtotal\":371.0,\"tax\":0.0,\"tip\":0.0,\"total\":371.0,\"transactionDate\":\"2026-07-26\",\"transactionTime\":\"18:27\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 955,
+      "completion_tokens": 2345,
+      "total_tokens": 3300,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 2240,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "request_sha256": "4d5561357fa7f96643736727702f3cb451e3ac84848dc923f601136f159d22d4",
+  "response": {
+    "id": "chatcmpl-EC0ekaOdLHniNGyxlLP7AXIiaSuIg",
+    "object": "chat.completion",
+    "created": 1786531166,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":false,\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"Unstructured Linen Blazer - Cream\",\"quantity\":1,\"totalPrice\":350,\"unitPrice\":350}],\"merchantAddress\":\"141 W Maple Road, Birmingham, Michigan 48009\",\"merchantName\":\"State and Liberty Clothing Company\",\"paymentMethod\":\"Visa\",\"subtotal\":350,\"tax\":21,\"tip\":0,\"total\":371,\"transactionDate\":\"2026-07-26\",\"transactionTime\":\"18:27\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1641,
+      "completion_tokens": 2106,
+      "total_tokens": 3747,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1984,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

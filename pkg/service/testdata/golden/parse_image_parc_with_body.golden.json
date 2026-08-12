@@ -1,0 +1,38 @@
+{
+  "request_sha256": "be99c9f1747c33caab844f9ee432590fe51ac0070fceae1c5a648af37c5d9afb",
+  "response": {
+    "id": "chatcmpl-EC016bayyY0azDIGHhTUxHJGkDUOj",
+    "object": "chat.completion",
+    "created": 1786528708,
+    "model": "gpt-5-mini-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":false,\"lastFourDigits\":\"2676\",\"lineItems\":[{\"description\":\"KEY WEST SHRIMP WRAP\",\"quantity\":1,\"totalPrice\":23.0,\"unitPrice\":23.0},{\"description\":\"PARC BURGER\",\"quantity\":1,\"totalPrice\":28.0,\"unitPrice\":28.0},{\"description\":\"PARC BURGER\",\"quantity\":1,\"totalPrice\":28.0,\"unitPrice\":28.0},{\"description\":\"DIET COKE\",\"quantity\":1,\"totalPrice\":5.0,\"unitPrice\":5.0},{\"description\":\"TRUFFLE FRIES\",\"quantity\":1,\"totalPrice\":15.0,\"unitPrice\":15.0},{\"description\":\"ESPRESSO\",\"quantity\":1,\"totalPrice\":4.0,\"unitPrice\":4.0}],\"merchantAddress\":\"800 Woodward Ave, Detroit, MI 48226\",\"merchantName\":\"Parc\",\"paymentMethod\":\"Visa\",\"subtotal\":99.0,\"tax\":5.94,\"tip\":20.0,\"total\":104.94,\"transactionDate\":\"2026-05-28\",\"transactionTime\":\"13:20\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 4623,
+      "completion_tokens": 255,
+      "total_tokens": 4878,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

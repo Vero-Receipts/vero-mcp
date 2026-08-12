@@ -1,0 +1,38 @@
+{
+  "request_sha256": "4abb78bd9c2aea6bbe747ddfd360167fea320e12cdbec639312af8ba93aa041a",
+  "response": {
+    "id": "chatcmpl-EC00RY3DFgnHkPP3c4mXkZqRQvFfJ",
+    "object": "chat.completion",
+    "created": 1786528667,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"currency\":\"USD\",\"isSubscription\":false,\"lastFourDigits\":\"1109\",\"lineItems\":[{\"description\":\"Rope, 50ft\",\"quantity\":1,\"totalPrice\":34,\"unitPrice\":34},{\"description\":\"Deck Brush\",\"quantity\":1,\"totalPrice\":18,\"unitPrice\":18},{\"description\":\"Brass Cleat\",\"quantity\":1,\"totalPrice\":12,\"unitPrice\":12}],\"merchantAddress\":\"14 Dock Road, Boston, MA 02210\",\"merchantName\":\"Harbor Supply Co.\",\"paymentMethod\":\"Visa\",\"subtotal\":52,\"tax\":3.25,\"tip\":0,\"total\":55.25,\"transactionDate\":\"2025-07-02\",\"transactionTime\":\"\"}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1121,
+      "completion_tokens": 2465,
+      "total_tokens": 3586,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 2304,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

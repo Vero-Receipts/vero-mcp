@@ -501,6 +501,37 @@ Thank you for your purchase!`,
 			},
 		},
 		{
+			// The counterfactual for state_and_liberty_emv_pdf_plus_body: the
+			// same EMV attachment parsed ALONE. It yields a valid receipt with
+			// the right total and NO line items, which is exactly the reported
+			// bug. Keeping it pinned means the merge case cannot pass for the
+			// wrong reason — the items it finds can only have come from the body.
+			name:         "state_and_liberty_emv_pdf_alone",
+			goldenName:   "parse_text_state_and_liberty_pdf_only",
+			bodyPath:     "testdata/attachments/state_and_liberty_emv_receipt.txt",
+			contextLabel: "Email Subject: Your receipt from State and Liberty Clothing Company\nEmail From: noreply@stateandliberty.com",
+			want: domain.OCRResult{
+				MerchantName:    "State and Liberty Clothing Company",
+				MerchantAddress: "141 W Maple Road, Birmingham, Michigan 48009",
+				MerchantCity:    "Birmingham",
+				MerchantState:   "MI",
+				TransactionDate: "2026-07-26",
+				TransactionTime: "18:27",
+				// With no breakdown in the PDF the charged amount becomes the
+				// subtotal and the 6% Michigan tax is lost — the merged case
+				// recovers both from the body (350.00 / 21.00).
+				Subtotal:       floatPtr(371.00),
+				Tax:            floatPtr(0),
+				Tip:            floatPtr(0),
+				Total:          floatPtr(371.00),
+				Currency:       "USD",
+				PaymentMethod:  "Visa",
+				LastFourDigits: "2676",
+				// The bug: no itemization anywhere in the PDF.
+				LineItems: []domain.LineItem{},
+			},
+		},
+		{
 			name:         "american_airlines_html",
 			goldenName:   "parse_email_american_airlines",
 			bodyPath:     "testdata/emails/email2.txt",
@@ -535,6 +566,248 @@ Thank you for your purchase!`,
 			}
 			svc := newGoldenOpenAIService(t, tt.goldenName)
 			r := svc.ParseTextAsReceipt(context.Background(), body, tt.contextLabel, nil)
+			if r.Error != "" {
+				t.Fatalf("parse error: %s", r.Error)
+			}
+			assertOCRResult(t, r, tt.want)
+		})
+	}
+}
+
+// TestGolden_ParseTextSectionsAsReceipt covers merged multi-source extraction —
+// an attached document plus the email body it arrived in, both describing the
+// same transaction. These cases pin the two behaviours the merge instructions
+// exist to control: body-only items must survive even when they break the
+// arithmetic, and an item stated in both sources must not be counted twice
+// (consolidateLineItems merges same-description items by SUMMING quantity).
+// To add a case: add a row and run with OPENAI_API_KEY set to capture.
+func TestGolden_ParseTextSectionsAsReceipt(t *testing.T) {
+	tests := []struct {
+		name         string
+		goldenName   string
+		sections     []TextSection
+		sectionPaths []TextSection // Text field holds a testdata path, loaded before the call
+		contextLabel string
+		want         domain.OCRResult
+	}{
+		{
+			// The reported bug, captured from the real email that produced it.
+			// The attachment is a State and Liberty EMV supplemental receipt:
+			// merchant, card, and the $371.00 total, but NO itemization — the
+			// blazer line item exists only in the email body. Extracting the PDF
+			// alone yields a receipt with zero items, which is what was reported.
+			//
+			// Fixtures are the real artifacts, converted once offline:
+			// the PDF through `pdftotext -layout`, the HTML through stripHTML
+			// (the same function extractEmailBodyText uses), so the text here is
+			// what the scanner actually feeds the model.
+			name:         "state_and_liberty_emv_pdf_plus_body",
+			goldenName:   "parse_sections_state_and_liberty",
+			contextLabel: "Email Subject: Your receipt from State and Liberty Clothing Company\nEmail From: noreply@stateandliberty.com",
+			sectionPaths: []TextSection{
+				{Label: "Attached document: EMV_Receipt.pdf", Text: "testdata/attachments/state_and_liberty_emv_receipt.txt"},
+				{Label: "Email body", Text: "testdata/emails/state_and_liberty_body.txt"},
+			},
+			want: domain.OCRResult{
+				MerchantName:    "State and Liberty Clothing Company",
+				MerchantAddress: "141 W Maple Road, Birmingham, Michigan 48009",
+				MerchantCity:    "Birmingham",
+				MerchantState:   "MI",
+				TransactionDate: "2026-07-26",
+				TransactionTime: "18:27",
+				Subtotal:        floatPtr(350.00),
+				Tax:             floatPtr(21.00),
+				Tip:             floatPtr(0),
+				Total:           floatPtr(371.00),
+				Currency:        "USD",
+				PaymentMethod:   "Visa",
+				LastFourDigits:  "2676",
+				LineItems: []domain.LineItem{
+					// Present only in the email body — the whole point of the case.
+					{Description: "Unstructured Linen Blazer - Cream", Quantity: 1, UnitPrice: 350.00, Price: 350.00},
+				},
+			},
+		},
+		{
+			// The PDF itemizes partially; the body adds one more item. The extra
+			// item must appear even though the items then exceed the subtotal.
+			name:         "pdf_plus_body_extra_item",
+			goldenName:   "parse_sections_body_extra_item",
+			contextLabel: "Email Subject: Order confirmation\nEmail From: orders@harborsupply.com",
+			sections: []TextSection{
+				{Label: "Attached document: invoice.pdf", Text: `Harbor Supply Co.
+14 Dock Road, Boston, MA 02210
+
+Invoice
+Date: 2025-07-02
+
+1x Rope, 50ft            $34.00
+1x Deck Brush            $18.00
+
+Subtotal:                $52.00
+Tax:                      $3.25
+Total:                   $55.25
+Paid with Visa ****1109`},
+				{Label: "Email body", Text: `Your Harbor Supply order is confirmed. Total charged: $55.25.
+
+Items in this shipment:
+1x Rope, 50ft            $34.00
+1x Deck Brush            $18.00
+1x Brass Cleat           $12.00`},
+			},
+			want: domain.OCRResult{
+				MerchantName:    "Harbor Supply Co.",
+				MerchantAddress: "14 Dock Road, Boston, MA 02210",
+				MerchantCity:    "Boston",
+				MerchantState:   "MA",
+				TransactionDate: "2025-07-02",
+				Subtotal:        floatPtr(52.00),
+				Tax:             floatPtr(3.25),
+				Tip:             floatPtr(0),
+				Total:           floatPtr(55.25),
+				Currency:        "USD",
+				PaymentMethod:   "Visa",
+				LastFourDigits:  "1109",
+				LineItems: []domain.LineItem{
+					{Description: "Rope, 50ft", Quantity: 1, UnitPrice: 34.00, Price: 34.00},
+					{Description: "Deck Brush", Quantity: 1, UnitPrice: 18.00, Price: 18.00},
+					{Description: "Brass Cleat", Quantity: 1, UnitPrice: 12.00, Price: 12.00},
+				},
+			},
+		},
+		{
+			// The body restates the PDF's items verbatim. Anti-doubling check:
+			// quantities must match the PDF, not twice the PDF.
+			name:         "pdf_plus_body_duplicate_items",
+			goldenName:   "parse_sections_duplicate_items",
+			contextLabel: "Email Subject: Your receipt\nEmail From: receipts@bluebottle.example",
+			sections: []TextSection{
+				{Label: "Attached document: receipt.pdf", Text: `Blue Bottle Coffee
+300 Webster Street, Oakland, CA 94607
+
+Date: 2025-08-19
+Time: 08:15
+
+1x Cappuccino            $5.75
+2x Almond Croissant      $9.00
+
+Subtotal:                $14.75
+Tax:                      $1.33
+Total:                   $16.08
+Amex ****3005`},
+				{Label: "Email body", Text: `Here's your receipt from Blue Bottle Coffee.
+
+1x Cappuccino            $5.75
+2x Almond Croissant      $9.00
+
+Subtotal:                $14.75
+Tax:                      $1.33
+Total:                   $16.08`},
+			},
+			want: domain.OCRResult{
+				MerchantName:    "Blue Bottle Coffee",
+				MerchantAddress: "300 Webster Street, Oakland, CA 94607",
+				MerchantCity:    "Oakland",
+				MerchantState:   "CA",
+				TransactionDate: "2025-08-19",
+				TransactionTime: "08:15",
+				Subtotal:        floatPtr(14.75),
+				Tax:             floatPtr(1.33),
+				Tip:             floatPtr(0),
+				Total:           floatPtr(16.08),
+				Currency:        "USD",
+				PaymentMethod:   "Amex",
+				LastFourDigits:  "3005",
+				LineItems: []domain.LineItem{
+					{Description: "Cappuccino", Quantity: 1, UnitPrice: 5.75, Price: 5.75},
+					{Description: "Almond Croissant", Quantity: 2, UnitPrice: 4.50, Price: 9.00},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sections := tt.sections
+			for _, sec := range tt.sectionPaths {
+				b, err := os.ReadFile(sec.Text)
+				if err != nil {
+					t.Fatalf("read section fixture %s: %v", sec.Text, err)
+				}
+				sections = append(sections, TextSection{Label: sec.Label, Text: string(b)})
+			}
+			svc := newGoldenOpenAIService(t, tt.goldenName)
+			r := svc.ParseTextSectionsAsReceipt(context.Background(), sections, tt.contextLabel, nil)
+			if r.Error != "" {
+				t.Fatalf("parse error: %s", r.Error)
+			}
+			assertOCRResult(t, r, tt.want)
+		})
+	}
+}
+
+// TestGolden_ParseImageWithContext covers the vision counterpart of merged
+// extraction: a receipt photo plus an email body that names an item the photo
+// does not show.
+func TestGolden_ParseImageWithContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		goldenName string
+		imagePath  string
+		mimeType   string
+		supplement TextSection
+		want       domain.OCRResult
+	}{
+		{
+			name:       "parc_restaurant_plus_body",
+			goldenName: "parse_image_parc_with_body",
+			imagePath:  "testdata/images/receipt1.jpeg",
+			mimeType:   "image/jpeg",
+			supplement: TextSection{Label: "Email body", Text: `Thanks for dining at Parc.
+
+Your order:
+KEY WEST SHRIMP WRAP     $23.00
+PARC BURGER              $28.00
+PARC BURGER              $28.00
+DIET COKE                 $5.00
+TRUFFLE FRIES            $15.00
+ESPRESSO                  $4.00
+
+Total charged: $124.94`},
+			want: domain.OCRResult{
+				MerchantName:    "Parc",
+				MerchantAddress: "800 Woodward Ave, Detroit, MI 48226",
+				MerchantCity:    "Detroit",
+				MerchantState:   "MI",
+				TransactionDate: "2026-05-28",
+				TransactionTime: "13:20",
+				Subtotal:        floatPtr(99.00),
+				Tax:             floatPtr(5.94),
+				Tip:             floatPtr(20.00),
+				Total:           floatPtr(124.94),
+				Currency:        "USD",
+				PaymentMethod:   "Visa",
+				LastFourDigits:  "2676",
+				LineItems: []domain.LineItem{
+					{Description: "KEY WEST SHRIMP WRAP", Quantity: 1, UnitPrice: 23, Price: 23},
+					{Description: "PARC BURGER", Quantity: 2, UnitPrice: 28, Price: 56},
+					{Description: "DIET COKE", Quantity: 1, UnitPrice: 5, Price: 5},
+					{Description: "TRUFFLE FRIES", Quantity: 1, UnitPrice: 15, Price: 15},
+					// Present only in the email body — the point of the case.
+					{Description: "ESPRESSO", Quantity: 1, UnitPrice: 4, Price: 4},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			imageBytes, err := os.ReadFile(tt.imagePath)
+			if err != nil {
+				t.Fatalf("read image: %v", err)
+			}
+			svc := newGoldenOpenAIService(t, tt.goldenName)
+			r := svc.ParseImageDataWithContext(context.Background(), imageBytes, tt.mimeType, tt.supplement)
 			if r.Error != "" {
 				t.Fatalf("parse error: %s", r.Error)
 			}
