@@ -382,7 +382,8 @@ func (s *PlaidService) GetAccounts(ctx context.Context, userID uuid.UUID) ([]map
 }
 
 // DeleteAccount removes the Plaid item associated with the given account ID
-// by fetching the account from Plaid, finding its item, and deleting the item.
+// by fetching the account from Plaid, finding its item, removing the item at
+// Plaid, and then deleting the local row.
 func (s *PlaidService) DeleteAccount(ctx context.Context, userID uuid.UUID, accountID string) error {
 	items, err := s.itemRepo.FindByUserID(ctx, userID)
 	if err != nil {
@@ -404,7 +405,12 @@ func (s *PlaidService) DeleteAccount(ctx context.Context, userID uuid.UUID, acco
 
 		for _, acct := range resp.GetAccounts() {
 			if acct.GetAccountId() == accountID {
-				// Found the item containing this account — remove the item
+				// Found the item containing this account. Tell Plaid first so
+				// billing stops; only drop the row once that succeeds, since
+				// the row holds the only token that can remove the Item.
+				if err := s.removeItem(ctx, item.ItemID, accessToken); err != nil {
+					return err
+				}
 				if err := s.itemRepo.Delete(ctx, item.ID); err != nil {
 					return err
 				}
@@ -420,6 +426,59 @@ func (s *PlaidService) DeleteAccount(ctx context.Context, userID uuid.UUID, acco
 		}
 	}
 	return domain.ErrNotFound
+}
+
+// plaidErrorCode extracts Plaid's error_code from an API error, or "" when the
+// error is not a Plaid API error or carries no code.
+func plaidErrorCode(err error) string {
+	var plaidErr plaid.GenericOpenAPIError
+	if !errors.As(err, &plaidErr) {
+		return ""
+	}
+	var body struct {
+		ErrorCode string `json:"error_code"`
+	}
+	if json.Unmarshal(plaidErr.Body(), &body) != nil {
+		return ""
+	}
+	return body.ErrorCode
+}
+
+// removeItem calls /item/remove, which terminates billing on the Item's
+// products and invalidates its access token.
+//
+// Codes meaning "this Item is already gone or unreachable" are treated as
+// success, since there is nothing left to remove and the caller should drop its
+// row. Every other failure is returned so the caller keeps the row: the stored
+// access token is the ONLY way to ever remove the Item, so deleting the row
+// first would leave a live, billable connection at Plaid that no query of ours
+// can see and no API call of ours can reach.
+func (s *PlaidService) removeItem(ctx context.Context, itemID, accessToken string) error {
+	req := plaid.NewItemRemoveRequest(accessToken)
+	_, _, err := s.client.PlaidApi.ItemRemove(ctx).ItemRemoveRequest(*req).Execute()
+	if err == nil {
+		slog.Info("plaid: removed item", "item_id", itemID)
+		return nil
+	}
+
+	switch code := plaidErrorCode(err); code {
+	case "ITEM_NOT_FOUND", "INVALID_ACCESS_TOKEN":
+		slog.Warn("plaid: item already gone, dropping local row anyway",
+			"item_id", itemID,
+			"plaid_error_code", code,
+		)
+		return nil
+	default:
+		var plaidErr plaid.GenericOpenAPIError
+		if errors.As(err, &plaidErr) {
+			slog.Error("plaid: item remove failed",
+				"item_id", itemID,
+				"plaid_error_code", code,
+				"plaid_error_body", string(plaidErr.Body()),
+			)
+		}
+		return fmt.Errorf("remove plaid item %s: %w", itemID, err)
+	}
 }
 
 type SyncResult struct {
