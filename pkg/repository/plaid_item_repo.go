@@ -51,10 +51,12 @@ var plaidItemCols = []string{
 	"id", "user_id", "item_id", "access_token", "sync_cursor", "created_at", "updated_at",
 }
 
+// FindByUserID returns the user's connected Items. Disconnected Items keep
+// their row for their item_id, but are no longer part of the connection.
 func (r *PlaidItemRepo) FindByUserID(ctx context.Context, userID uuid.UUID) ([]domain.PlaidItem, error) {
 	rows, err := r.SQ.Select(plaidItemCols...).
 		From("plaid_items").
-		Where(sq.Eq{"user_id": userID.String()}).
+		Where(sq.Eq{"user_id": userID.String(), "deleted_at": nil}).
 		OrderBy("created_at").
 		QueryContext(ctx)
 	if err != nil {
@@ -76,7 +78,7 @@ func (r *PlaidItemRepo) FindByUserID(ctx context.Context, userID uuid.UUID) ([]d
 func (r *PlaidItemRepo) FindByItemID(ctx context.Context, itemID string) (*domain.PlaidItem, error) {
 	row := r.SQ.Select(plaidItemCols...).
 		From("plaid_items").
-		Where(sq.Eq{"item_id": itemID}).
+		Where(sq.Eq{"item_id": itemID, "deleted_at": nil}).
 		QueryRowContext(ctx)
 
 	item, err := r.scanPlaidItem(row)
@@ -89,11 +91,13 @@ func (r *PlaidItemRepo) FindByItemID(ctx context.Context, itemID string) (*domai
 	return item, nil
 }
 
+// UpdateSyncCursor advances the Item's sync position. A disconnected Item has
+// nothing left to sync, so its cursor is frozen where the disconnect left it.
 func (r *PlaidItemRepo) UpdateSyncCursor(ctx context.Context, id uuid.UUID, cursor string) error {
 	res, err := r.SQ.Update("plaid_items").
 		Set("sync_cursor", cursor).
 		Set("updated_at", sq.Expr("CURRENT_TIMESTAMP")).
-		Where(sq.Eq{"id": id.String()}).
+		Where(sq.Eq{"id": id.String(), "deleted_at": nil}).
 		ExecContext(ctx)
 	if err != nil {
 		return err
@@ -105,9 +109,18 @@ func (r *PlaidItemRepo) UpdateSyncCursor(ctx context.Context, id uuid.UUID, curs
 	return nil
 }
 
+// Delete disconnects the Item, keeping the row so its item_id stays resolvable
+// for the transaction and account rows that outlive the disconnect. The row
+// becomes invisible to every other method here, so callers see the same thing
+// they would have seen had it been erased.
+//
+// Disconnecting an already-disconnected Item reports domain.ErrNotFound, since
+// there is no connected Item under that id.
 func (r *PlaidItemRepo) Delete(ctx context.Context, id uuid.UUID) error {
-	res, err := r.SQ.Delete("plaid_items").
-		Where(sq.Eq{"id": id.String()}).
+	res, err := r.SQ.Update("plaid_items").
+		Set("deleted_at", sq.Expr("CURRENT_TIMESTAMP")).
+		Set("updated_at", sq.Expr("CURRENT_TIMESTAMP")).
+		Where(sq.Eq{"id": id.String(), "deleted_at": nil}).
 		ExecContext(ctx)
 	if err != nil {
 		return err
