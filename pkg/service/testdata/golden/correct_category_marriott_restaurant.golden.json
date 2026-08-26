@@ -1,0 +1,38 @@
+{
+  "request_sha256": "9e5ad5b708b0833bee2313c793e42769ae3ef2380fddf13d9247c9234ef074cb",
+  "response": {
+    "id": "chatcmpl-EHB4vjWhJDlrjSOpTiRWq2kzTulSt",
+    "object": "chat.completion",
+    "created": 1787762869,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"confidence\":0.8,\"corrected_pfc_primary\":\"TRAVEL\",\"reason\":\"Marriott is a hotel chain (lodging business). The receipt items (club sandwich, iced tea) are incidental purchases at the property but do not override the merchant's lodging classification. Therefore the bank's TRAVEL_LODGING category is reasonable; no correction needed.\",\"should_correct\":false}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1557,
+      "completion_tokens": 923,
+      "total_tokens": 2480,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 832,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "request_sha256": "1ffdd9e3b73108c2b9fba7c4eb28bd8a5cdd5de698d20c423676e0656aa65fc6",
+  "response": {
+    "id": "chatcmpl-EHB4oxZWcbZDAZkMZeWxzgfzmGcPm",
+    "object": "chat.completion",
+    "created": 1787762862,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"confidence\":0.8,\"corrected_pfc_primary\":\"FOOD_AND_DRINK\",\"reason\":\"Starbucks is a coffee shop; a $25 gift card purchased there is still a transaction at a food-and-drink merchant, and the line item does not change the merchant's primary category.\",\"should_correct\":false}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1557,
+      "completion_tokens": 527,
+      "total_tokens": 2084,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 448,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

@@ -11,6 +11,21 @@ import (
 	"github.com/Vero-Receipts/vero-mcp/pkg/repository"
 )
 
+// categoryLLMMinConfidence is the floor below which a model-proposed correction
+// is recorded but not applied, matching llmLinkThreshold in the catalog matcher.
+const categoryLLMMinConfidence = 0.80
+
+// plaidCategoryOf returns the category Plaid assigned. Rows written before
+// plaid_pfc_* existed fall back to the effective columns, which for an
+// uncorrected row hold Plaid's value anyway.
+func plaidCategoryOf(tx *domain.Transaction) (primary, detailed string) {
+	primary, detailed = ptrStr(tx.PlaidPFCPrimary), ptrStr(tx.PlaidPFCDetailed)
+	if primary == "" || detailed == "" {
+		return ptrStr(tx.PFCPrimary), ptrStr(tx.PFCDetailed)
+	}
+	return primary, detailed
+}
+
 // CategoryService handles receipt-based transaction category corrections.
 type CategoryService struct {
 	correctionCacheRepo repository.CategoryCorrectionCacheRepository
@@ -33,15 +48,20 @@ func NewCategoryService(
 // CorrectCategoryAfterMatch checks if a matched receipt's line items suggest a
 // different category than what Plaid assigned, and updates the transaction if so.
 func (s *CategoryService) CorrectCategoryAfterMatch(ctx context.Context, receipt *domain.Receipt, tx *domain.Transaction) {
-	if len(receipt.LineItems) == 0 || tx.PFCPrimary == nil || tx.PFCDetailed == nil {
+	// Judge Plaid's own category, not the effective one: pfc_* may already hold a
+	// correction this service or the vetting pass made, and asking the model to
+	// review our own answer — or keying the cache on it — would compound an error
+	// rather than catch it.
+	bankPrimary, bankDetailed := plaidCategoryOf(tx)
+	if len(receipt.LineItems) == 0 || bankPrimary == "" || bankDetailed == "" {
 		return
 	}
-	if *tx.PFCPrimary == "" || *tx.PFCDetailed == "" {
-		return
-	}
-	if tx.CorrectedPFCPrimary != nil {
-		return // already corrected
-	}
+	// No guard on an existing correction. A receipt sees the merchant AND the
+	// basket, so it outranks the merchant-vetting pass and should overwrite it;
+	// and a transaction has at most one matched receipt, so the only way to
+	// arrive here twice is the match itself changing — in which case re-deciding
+	// is the point. The vetting pass yields in the other direction by skipping
+	// rows whose category_corrected_at is already set.
 
 	var lineItems []domain.LineItem
 	if err := json.Unmarshal(receipt.LineItems, &lineItems); err != nil || len(lineItems) == 0 {
@@ -59,52 +79,73 @@ func (s *CategoryService) CorrectCategoryAfterMatch(ctx context.Context, receipt
 	}
 
 	// Stage 1: Check cache.
-	cached, err := s.correctionCacheRepo.FindByMerchantAndCategory(ctx, merchantCanonical, *tx.PFCDetailed)
+	cached, err := s.correctionCacheRepo.FindByMerchantAndCategory(ctx, merchantCanonical, bankDetailed)
 	if err == nil {
-		if cached.CorrectedPFCDetailed != *tx.PFCDetailed {
+		if cached.CorrectedPFCDetailed != bankDetailed {
 			s.applyCorrection(ctx, tx, cached.CorrectedPFCPrimary, cached.CorrectedPFCDetailed, "cache")
 		}
 		return
 	}
 
 	// Stage 2: Rule-based keyword detection.
-	ruleResult := detectCategoryByRules(lineItems, *tx.PFCPrimary)
+	ruleResult := detectCategoryByRules(lineItems, bankPrimary)
 
 	if ruleResult != nil && !ruleResult.ShouldCorrect {
 		// Rules agree with Plaid — cache and skip.
-		s.cacheCorrection(ctx, merchantCanonical, *tx.PFCPrimary, *tx.PFCDetailed,
-			*tx.PFCPrimary, *tx.PFCDetailed, "rule", lineItems)
+		s.cacheCorrection(ctx, merchantCanonical, bankPrimary, bankDetailed,
+			bankPrimary, bankDetailed, "rule", lineItems)
 		return
 	}
 
 	if ruleResult != nil && ruleResult.ShouldCorrect {
 		// Rules confidently disagree — apply without LLM.
 		s.applyCorrection(ctx, tx, ruleResult.CorrectedPFCPrimary, ruleResult.CorrectedPFCDetailed, "rule")
-		s.cacheCorrection(ctx, merchantCanonical, *tx.PFCPrimary, *tx.PFCDetailed,
+		s.cacheCorrection(ctx, merchantCanonical, bankPrimary, bankDetailed,
 			ruleResult.CorrectedPFCPrimary, ruleResult.CorrectedPFCDetailed, "rule", lineItems)
 		return
 	}
 
 	// Stage 3: LLM fallback (rules inconclusive).
-	llmResult, err := s.openAISvc.CorrectCategory(ctx, lineItems, *tx.PFCPrimary, *tx.PFCDetailed)
+	llmResult, err := s.openAISvc.CorrectCategory(ctx, merchantCanonical, lineItems, bankPrimary, bankDetailed)
 	if err != nil {
 		slog.Error("category correction LLM failed", "error", err, "tx_id", tx.TransactionID)
 		return
 	}
 
-	correctedPrimary := *tx.PFCPrimary
-	correctedDetailed := *tx.PFCDetailed
+	correctedPrimary := bankPrimary
+	correctedDetailed := bankDetailed
+	if llmResult.ShouldCorrect && llmResult.Confidence < categoryLLMMinConfidence {
+		slog.Info("category correction below confidence floor, leaving Plaid's category",
+			"tx_id", tx.TransactionID, "confidence", llmResult.Confidence,
+			"would_have_been", llmResult.CorrectedPFCDetailed)
+		llmResult.ShouldCorrect = false
+	}
 	if llmResult.ShouldCorrect {
 		s.applyCorrection(ctx, tx, llmResult.CorrectedPFCPrimary, llmResult.CorrectedPFCDetailed, "llm")
 		correctedPrimary = llmResult.CorrectedPFCPrimary
 		correctedDetailed = llmResult.CorrectedPFCDetailed
 	}
-	s.cacheCorrection(ctx, merchantCanonical, *tx.PFCPrimary, *tx.PFCDetailed,
+	s.cacheCorrection(ctx, merchantCanonical, bankPrimary, bankDetailed,
 		correctedPrimary, correctedDetailed, "llm", lineItems)
 }
 
+// applyCorrection writes a correction only if it names a real Plaid category.
+// The schema enum already constrains model output, but the rule stage builds
+// categories with no model and no schema involved, so this is the only check
+// standing between mapPrimaryToDetailed's synthesised names and stored data.
 func (s *CategoryService) applyCorrection(ctx context.Context, tx *domain.Transaction, primary, detailed, source string) {
-	if err := s.txCacheRepo.UpdateCorrectedCategory(ctx, tx.TransactionID, primary, detailed); err != nil {
+	if !domain.ValidPFC(primary, detailed) {
+		slog.Warn("category correction rejected: not a Plaid category",
+			"tx_id", tx.TransactionID, "primary", primary, "detailed", detailed, "source", source)
+		return
+	}
+	// A correction names a primary; its detailed value is that primary's
+	// catch-all. Writing it when the primary already agrees would trade the
+	// bank's specific sub-type for a vaguer one and gain nothing.
+	if bankPrimary, _ := plaidCategoryOf(tx); bankPrimary == primary {
+		return
+	}
+	if err := s.txCacheRepo.ApplyCategoryCorrection(ctx, tx.TransactionID, primary, detailed); err != nil {
 		slog.Error("failed to apply category correction", "tx_id", tx.TransactionID, "error", err)
 		return
 	}
@@ -221,38 +262,22 @@ func detectCategoryByRules(lineItems []domain.LineItem, pfcPrimary string) *doma
 	if bestCategory == pfcPrimary {
 		return &domain.CategoryCorrectionResult{
 			ShouldCorrect: false,
-			Source:         "rule",
-			Reason:         fmt.Sprintf("rules agree: %d/%d items match %s", bestCount, totalItems, pfcPrimary),
+			Source:        "rule",
+			Reason:        fmt.Sprintf("rules agree: %d/%d items match %s", bestCount, totalItems, pfcPrimary),
 		}
 	}
 
-	detailedCategory := mapPrimaryToDetailed(bestCategory, lineItems)
+	// The catch-all leaf, not a synthesised name: the keyword vote establishes a
+	// primary and nothing more, so claiming a sub-type would be inventing detail.
+	detailedCategory, ok := domain.OtherDetailedFor(bestCategory)
+	if !ok {
+		return nil
+	}
 	return &domain.CategoryCorrectionResult{
 		ShouldCorrect:        true,
 		CorrectedPFCPrimary:  bestCategory,
 		CorrectedPFCDetailed: detailedCategory,
-		Source:                "rule",
-		Reason:                fmt.Sprintf("rules: %d/%d items suggest %s, Plaid says %s", bestCount, totalItems, bestCategory, pfcPrimary),
-	}
-}
-
-func mapPrimaryToDetailed(primary string, lineItems []domain.LineItem) string {
-	switch primary {
-	case "FOOD_AND_DRINK":
-		for _, li := range lineItems {
-			desc := strings.ToLower(li.Description)
-			for _, kw := range []string{"milk", "bread", "cheese", "fruit", "vegetable", "meat", "egg"} {
-				if strings.Contains(desc, kw) {
-					return "FOOD_AND_DRINK_GROCERIES"
-				}
-			}
-		}
-		return "FOOD_AND_DRINK_OTHER"
-	case "GENERAL_MERCHANDISE":
-		return "GENERAL_MERCHANDISE_OTHER"
-	case "MEDICAL":
-		return "MEDICAL_PHARMACIES_AND_SUPPLEMENTS"
-	default:
-		return primary + "_OTHER"
+		Source:               "rule",
+		Reason:               fmt.Sprintf("rules: %d/%d items suggest %s, Plaid says %s", bestCount, totalItems, bestCategory, pfcPrimary),
 	}
 }

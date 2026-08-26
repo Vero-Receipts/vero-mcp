@@ -261,20 +261,21 @@ func TestDisambiguateMerchant_NotSameBusiness(t *testing.T) {
 
 func TestCorrectCategory_NoAPIKey(t *testing.T) {
 	svc := NewOpenAIService("")
-	_, err := svc.CorrectCategory(context.Background(), []domain.LineItem{{Description: "Latte"}}, "GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER")
+	_, err := svc.CorrectCategory(context.Background(), "Blue Bottle Coffee", []domain.LineItem{{Description: "Latte"}}, "GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER")
 	if err == nil {
 		t.Fatal("expected error when API key is empty")
 	}
 }
 
 func TestCorrectCategory_ShouldCorrect(t *testing.T) {
-	corrResult := domain.CategoryCorrectionResult{
-		ShouldCorrect:        true,
-		CorrectedPFCPrimary:  "FOOD_AND_DRINK",
-		CorrectedPFCDetailed: "FOOD_AND_DRINK_COFFEE",
-		Reason:               "Items are coffee drinks",
-	}
-	contentJSON, _ := json.Marshal(corrResult)
+	// The schema asks only for the detailed category; the primary is derived
+	// from it, so a mismatched pair cannot be represented.
+	contentJSON, _ := json.Marshal(map[string]interface{}{
+		"should_correct":        true,
+		"corrected_pfc_primary": "FOOD_AND_DRINK",
+		"confidence":            0.93,
+		"reason":                "Items are coffee drinks",
+	})
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
@@ -293,7 +294,7 @@ func TestCorrectCategory_ShouldCorrect(t *testing.T) {
 		{Description: "Scone", Quantity: 1, Price: 3.00},
 	}
 
-	result, err := svc.CorrectCategory(context.Background(), lineItems, "GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER")
+	result, err := svc.CorrectCategory(context.Background(), "Blue Bottle Coffee", lineItems, "GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -303,19 +304,149 @@ func TestCorrectCategory_ShouldCorrect(t *testing.T) {
 	if result.CorrectedPFCPrimary != "FOOD_AND_DRINK" {
 		t.Errorf("expected FOOD_AND_DRINK, got %s", result.CorrectedPFCPrimary)
 	}
+	// Asked only for a primary, so the detailed value is that primary's
+	// catch-all rather than a sub-type the model never named.
+	if result.CorrectedPFCDetailed != "FOOD_AND_DRINK_OTHER_FOOD_AND_DRINK" {
+		t.Errorf("expected the catch-all leaf, got %s", result.CorrectedPFCDetailed)
+	}
 	if result.Source != "llm" {
 		t.Errorf("expected source llm, got %s", result.Source)
+	}
+	if result.Confidence != 0.93 {
+		t.Errorf("expected confidence 0.93, got %v", result.Confidence)
+	}
+}
+
+// The prompt must carry the merchant: without it the model reads a hotel
+// restaurant charge as a restaurant, which is how production filled up with
+// merchant-inappropriate categories.
+func TestCorrectCategory_SendsMerchantAndEnum(t *testing.T) {
+	var body map[string]interface{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		contentJSON, _ := json.Marshal(map[string]interface{}{
+			"should_correct": false, "corrected_pfc_primary": "TRAVEL",
+			"confidence": 0.9, "reason": "ok",
+		})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{"message": map[string]string{"content": string(contentJSON)}}},
+		})
+	}))
+	defer ts.Close()
+
+	svc := newTestOpenAIService("test-key", ts)
+	if _, err := svc.CorrectCategory(context.Background(), "Marriott",
+		[]domain.LineItem{{Description: "Club Sandwich"}}, "TRAVEL", "TRAVEL_LODGING"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	msgs := body["messages"].([]interface{})
+	content := msgs[0].(map[string]interface{})["content"].([]interface{})
+	prompt := content[0].(map[string]interface{})["text"].(string)
+	if !strings.Contains(prompt, "Marriott") {
+		t.Error("prompt does not name the merchant")
+	}
+
+	// The enum is what makes an invented category impossible. If a refactor drops
+	// it the calls still succeed, silently returning to the old behaviour, so
+	// assert on it directly.
+	rf := body["response_format"].(map[string]interface{})
+	schema := rf["json_schema"].(map[string]interface{})["schema"].(map[string]interface{})
+	props := schema["properties"].(map[string]interface{})
+	primary := props["corrected_pfc_primary"].(map[string]interface{})
+	enum, ok := primary["enum"].([]interface{})
+	if !ok || len(enum) == 0 {
+		t.Fatal("corrected_pfc_primary carries no enum")
+	}
+	if len(enum) != 16 {
+		t.Errorf("enum has %d entries, want Plaid's 16 primaries", len(enum))
+	}
+	if rf["json_schema"].(map[string]interface{})["strict"] != true {
+		t.Error("json_schema must be strict, or the enum does not bind")
+	}
+	if _, present := props["corrected_pfc_detailed"]; present {
+		t.Error("only the primary is asked for; the detailed value comes from its catch-all leaf")
+	}
+
+	// Structured Outputs emits properties in "required" order, so a category
+	// named before "reason" is chosen before any reasoning is written down.
+	req := schema["required"].([]interface{})
+	var reasonAt, categoryAt = -1, -1
+	for i, f := range req {
+		switch f.(string) {
+		case "reason":
+			reasonAt = i
+		case "corrected_pfc_primary":
+			categoryAt = i
+		}
+	}
+	if reasonAt < 0 || categoryAt < 0 || reasonAt > categoryAt {
+		t.Errorf("reason must be required before corrected_pfc_primary so the category is a conclusion, got order %v", req)
+	}
+}
+
+// Two settings that have to move together. A reasoning model counts reasoning
+// against max_completion_tokens, so too small a budget truncates the response to
+// empty. But minimal effort is also wrong here, unlike the other nano-tier calls:
+// choosing from a 103-value enum is not a yes/no, and at minimal effort the model
+// reasoned to FOOD_AND_DRINK_COFFEE while emitting an unrelated category, with
+// confidence low enough that even its correct answers fell below the apply gate.
+func TestCorrectCategory_ThinksHardEnoughToChooseFromTheEnum(t *testing.T) {
+	var body map[string]interface{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		contentJSON, _ := json.Marshal(map[string]interface{}{
+			"should_correct": false, "corrected_pfc_primary": "FOOD_AND_DRINK",
+			"confidence": 0.9, "reason": "ok",
+		})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{"message": map[string]string{"content": string(contentJSON)}}},
+		})
+	}))
+	defer ts.Close()
+
+	svc := newTestOpenAIService("test-key", ts)
+	if _, err := svc.CorrectCategory(context.Background(), "Blue Bottle",
+		[]domain.LineItem{{Description: "Latte"}}, "FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if effort := body["reasoning_effort"]; effort == "minimal" || effort == nil {
+		t.Errorf("reasoning_effort = %v; minimal is not enough to pick from the category enum", effort)
+	}
+	if got := body["max_completion_tokens"].(float64); got < 8192 {
+		t.Errorf("max_completion_tokens = %v, too small to fit this much reasoning plus the JSON payload", got)
+	}
+}
+
+// An empty completion is the truncation symptom; it must surface as an error
+// rather than a silent zero-value "no correction".
+func TestCorrectCategory_EmptyContentIsAnError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]string{"content": ""}, "finish_reason": "length"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	svc := newTestOpenAIService("test-key", ts)
+	_, err := svc.CorrectCategory(context.Background(), "M", []domain.LineItem{{Description: "X"}}, "A", "B")
+	if err == nil {
+		t.Fatal("expected an error for an empty completion")
+	}
+	if !strings.Contains(err.Error(), "length") {
+		t.Errorf("error should surface finish_reason, got: %v", err)
 	}
 }
 
 func TestCorrectCategory_NoCorrection(t *testing.T) {
-	corrResult := domain.CategoryCorrectionResult{
-		ShouldCorrect:        false,
-		CorrectedPFCPrimary:  "FOOD_AND_DRINK",
-		CorrectedPFCDetailed: "FOOD_AND_DRINK_RESTAURANT",
-		Reason:               "Category is already correct",
-	}
-	contentJSON, _ := json.Marshal(corrResult)
+	contentJSON, _ := json.Marshal(map[string]interface{}{
+		"should_correct":        false,
+		"corrected_pfc_primary": "FOOD_AND_DRINK",
+		"confidence":            0.9,
+		"reason":                "Category is already correct",
+	})
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
@@ -329,7 +460,7 @@ func TestCorrectCategory_NoCorrection(t *testing.T) {
 	defer ts.Close()
 
 	svc := newTestOpenAIService("test-key", ts)
-	result, err := svc.CorrectCategory(context.Background(), []domain.LineItem{{Description: "Burger"}}, "FOOD_AND_DRINK", "FOOD_AND_DRINK_RESTAURANT")
+	result, err := svc.CorrectCategory(context.Background(), "Shake Shack", []domain.LineItem{{Description: "Burger"}}, "FOOD_AND_DRINK", "FOOD_AND_DRINK_RESTAURANT")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -346,7 +477,7 @@ func TestCorrectCategory_APIError(t *testing.T) {
 	defer ts.Close()
 
 	svc := newTestOpenAIService("test-key", ts)
-	_, err := svc.CorrectCategory(context.Background(), []domain.LineItem{{Description: "X"}}, "A", "B")
+	_, err := svc.CorrectCategory(context.Background(), "M", []domain.LineItem{{Description: "X"}}, "A", "B")
 	if err == nil {
 		t.Fatal("expected error from API failure")
 	}

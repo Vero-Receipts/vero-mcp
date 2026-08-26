@@ -1001,7 +1001,7 @@ func TestTransactionCacheRepo_RemoveBatch(t *testing.T) {
 	}
 }
 
-func TestTransactionCacheRepo_UpdateCorrectedCategory(t *testing.T) {
+func TestTransactionCacheRepo_ApplyCategoryCorrection(t *testing.T) {
 	db := setupTestDB(t)
 	userRepo := NewUserRepo(db, DialectSQLite)
 	repo := NewTransactionCacheRepo(db, DialectSQLite)
@@ -1019,13 +1019,95 @@ func TestTransactionCacheRepo_UpdateCorrectedCategory(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	if err := repo.UpdateCorrectedCategory(ctx, "txn_cat", "FOOD_AND_DRINK", "FOOD_AND_DRINK_RESTAURANT"); err != nil {
-		t.Fatalf("update corrected category: %v", err)
+	if err := repo.ApplyCategoryCorrection(ctx, "txn_cat", "FOOD_AND_DRINK", "FOOD_AND_DRINK_RESTAURANT"); err != nil {
+		t.Fatalf("apply category correction: %v", err)
 	}
 
 	found, _ := repo.FindByTransactionID(ctx, "txn_cat")
-	if found.CorrectedPFCPrimary == nil || *found.CorrectedPFCPrimary != "FOOD_AND_DRINK" {
-		t.Errorf("expected corrected primary FOOD_AND_DRINK, got %v", found.CorrectedPFCPrimary)
+	// The correction lands in the effective columns, which is what clients read.
+	if found.PFCPrimary == nil || *found.PFCPrimary != "FOOD_AND_DRINK" {
+		t.Errorf("effective primary = %v, want FOOD_AND_DRINK", found.PFCPrimary)
+	}
+	if found.PFCDetailed == nil || *found.PFCDetailed != "FOOD_AND_DRINK_RESTAURANT" {
+		t.Errorf("effective detailed = %v, want FOOD_AND_DRINK_RESTAURANT", found.PFCDetailed)
+	}
+	if found.CategoryCorrectedAt == nil {
+		t.Error("category_corrected_at must be stamped so the vetting pass leaves this row alone")
+	}
+}
+
+// A correction must survive the next Plaid sync. The upsert re-applies most
+// columns from Plaid on conflict; if it did so for pfc_* every correction would
+// be silently undone on the following sync.
+func TestTransactionCacheRepo_CorrectionSurvivesResync(t *testing.T) {
+	db := setupTestDB(t)
+	userRepo := NewUserRepo(db, DialectSQLite)
+	repo := NewTransactionCacheRepo(db, DialectSQLite)
+	ctx := context.Background()
+
+	user := &domain.User{Name: "Test"}
+	if err := userRepo.Upsert(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	plaidPrimary, plaidDetailed := "GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE"
+	txn := domain.Transaction{
+		TransactionID: "txn_resync", AccountID: "acc_1", Amount: 6, Date: "2025-01-01",
+		Name: "Coffee Bar", Category: json.RawMessage("[]"),
+		PFCPrimary: &plaidPrimary, PFCDetailed: &plaidDetailed,
+	}
+	if _, err := repo.UpsertBatch(ctx, user.ID, []domain.Transaction{txn}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := repo.ApplyCategoryCorrection(ctx, "txn_resync", "FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE"); err != nil {
+		t.Fatalf("apply correction: %v", err)
+	}
+
+	// Plaid re-delivers the same transaction with its original category.
+	if _, err := repo.UpsertBatch(ctx, user.ID, []domain.Transaction{txn}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+
+	found, _ := repo.FindByTransactionID(ctx, "txn_resync")
+	if found.PFCDetailed == nil || *found.PFCDetailed != "FOOD_AND_DRINK_COFFEE" {
+		t.Errorf("re-sync clobbered the correction: effective detailed = %v", found.PFCDetailed)
+	}
+	if found.PlaidPFCDetailed == nil || *found.PlaidPFCDetailed != plaidDetailed {
+		t.Errorf("plaid_pfc_detailed = %v, want Plaid's own %q", found.PlaidPFCDetailed, plaidDetailed)
+	}
+}
+
+// An uncorrected row Plaid first delivered without a category must still get one
+// when a later sync supplies it: the COALESCE is first-non-null-wins, not frozen.
+func TestTransactionCacheRepo_ResyncFillsMissingCategory(t *testing.T) {
+	db := setupTestDB(t)
+	userRepo := NewUserRepo(db, DialectSQLite)
+	repo := NewTransactionCacheRepo(db, DialectSQLite)
+	ctx := context.Background()
+
+	user := &domain.User{Name: "Test"}
+	if err := userRepo.Upsert(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	bare := domain.Transaction{
+		TransactionID: "txn_late", AccountID: "acc_1", Amount: 6, Date: "2025-01-01",
+		Name: "Coffee Bar", Category: json.RawMessage("[]"),
+	}
+	if _, err := repo.UpsertBatch(ctx, user.ID, []domain.Transaction{bare}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	primary, detailed := "FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE"
+	late := bare
+	late.PFCPrimary, late.PFCDetailed = &primary, &detailed
+	if _, err := repo.UpsertBatch(ctx, user.ID, []domain.Transaction{late}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+
+	found, _ := repo.FindByTransactionID(ctx, "txn_late")
+	if found.PFCDetailed == nil || *found.PFCDetailed != detailed {
+		t.Errorf("effective detailed = %v, want %q filled in by the later sync", found.PFCDetailed, detailed)
 	}
 }
 
@@ -1492,4 +1574,3 @@ func TestTransactionCacheRepo_SearchUnmatched(t *testing.T) {
 		t.Errorf("expected 1 result for 'starbucks', got %d", len(results))
 	}
 }
-

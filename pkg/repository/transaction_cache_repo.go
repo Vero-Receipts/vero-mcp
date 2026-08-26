@@ -39,7 +39,7 @@ var txnDBCols = []string{
 	"t.id", "t.user_id", "t.transaction_id", "t.account_id", "t.amount", "t.date", "t.datetime", "t.name",
 	"t.merchant_id", "t.category", "t.pfc_primary", "t.pfc_detailed", "t.payment_channel",
 	"t.pending", "t.synced_at",
-	"t.corrected_pfc_primary", "t.corrected_pfc_detailed", "t.category_corrected_at",
+	"t.plaid_pfc_primary", "t.plaid_pfc_detailed", "t.category_corrected_at",
 	"t.recurring",
 }
 
@@ -70,11 +70,15 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 	}
 	defer tx.Rollback()
 
+	// plaid_pfc_* record what Plaid says and track it on every sync. pfc_* are
+	// the effective category a client renders and filters on, which a correction
+	// may overwrite, so Plaid only ever seeds them.
 	rawSQL := `INSERT INTO transaction_cache
 		(id, user_id, transaction_id, account_id, amount, date, datetime, name,
-		 merchant_id, location, raw_payload, category, pfc_primary, pfc_detailed, payment_channel,
+		 merchant_id, location, raw_payload, category,
+		 plaid_pfc_primary, plaid_pfc_detailed, pfc_primary, pfc_detailed, payment_channel,
 		 pending, synced_at)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	 ON CONFLICT (transaction_id) DO UPDATE SET
 	   account_id      = EXCLUDED.account_id,
 	   amount          = EXCLUDED.amount,
@@ -85,8 +89,10 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 	   location        = COALESCE(EXCLUDED.location, transaction_cache.location),
 	   raw_payload     = COALESCE(EXCLUDED.raw_payload, transaction_cache.raw_payload),
 	   category        = EXCLUDED.category,
-	   pfc_primary     = EXCLUDED.pfc_primary,
-	   pfc_detailed    = EXCLUDED.pfc_detailed,
+	   plaid_pfc_primary  = EXCLUDED.plaid_pfc_primary,
+	   plaid_pfc_detailed = EXCLUDED.plaid_pfc_detailed,
+	   pfc_primary     = COALESCE(transaction_cache.pfc_primary, EXCLUDED.pfc_primary),
+	   pfc_detailed    = COALESCE(transaction_cache.pfc_detailed, EXCLUDED.pfc_detailed),
 	   payment_channel = EXCLUDED.payment_channel,
 	   pending         = EXCLUDED.pending,
 	   synced_at       = EXCLUDED.synced_at`
@@ -151,7 +157,8 @@ func (r *TransactionCacheRepo) UpsertBatch(ctx context.Context, userID uuid.UUID
 		rowID := uuid.New().String()
 		_, err := stmt.ExecContext(ctx,
 			rowID, uid, t.TransactionID, t.AccountID, t.Amount, t.Date, dtStr, t.Name,
-			merchantIDStr, locationStr, rawPayloadStr, category, t.PFCPrimary, t.PFCDetailed, t.PaymentChannel,
+			merchantIDStr, locationStr, rawPayloadStr, category,
+			t.PFCPrimary, t.PFCDetailed, t.PFCPrimary, t.PFCDetailed, t.PaymentChannel,
 			pending, now,
 		)
 		if err != nil {
@@ -359,7 +366,7 @@ func (r *TransactionCacheRepo) FindByUserIDWithReceipts(ctx context.Context, use
 			&idStr, &userIDStr, &twr.TransactionID, &twr.AccountID,
 			&twr.Amount, &twr.Date, &dt, &twr.Name,
 			&merchantIDStr, &categoryStr, &twr.PFCPrimary, &twr.PFCDetailed, &twr.PaymentChannel,
-			&pendingVal, &syncedAt, &twr.CorrectedPFCPrimary, &twr.CorrectedPFCDetailed, &correctedAt,
+			&pendingVal, &syncedAt, &twr.PlaidPFCPrimary, &twr.PlaidPFCDetailed, &correctedAt,
 			&recurringVal,
 			&mCanonical, &mLogo,
 			&rID, &rImageURL, &rThumbnailURL, &rMerchantName, &rTotal, &rSubtotal, &rTax, &rTip,
@@ -684,12 +691,17 @@ func (r *TransactionCacheRepo) FindByTransactionID(ctx context.Context, transact
 	return t, nil
 }
 
-func (r *TransactionCacheRepo) UpdateCorrectedCategory(ctx context.Context, transactionID string, primary, detailed string) error {
+// ApplyCategoryCorrection overwrites a transaction's effective category. Plaid's
+// own value is untouched in plaid_pfc_*, so the correction is reversible and the
+// two columns together record that this row was corrected. category_corrected_at
+// marks the row as claimed, which is how the merchant-vetting pass knows to leave
+// it alone.
+func (r *TransactionCacheRepo) ApplyCategoryCorrection(ctx context.Context, transactionID string, primary, detailed string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	res, err := r.SQ.Update("transaction_cache").
-		Set("corrected_pfc_primary", primary).
-		Set("corrected_pfc_detailed", detailed).
+		Set("pfc_primary", primary).
+		Set("pfc_detailed", detailed).
 		Set("category_corrected_at", now).
 		Where(sq.Eq{"transaction_id": transactionID}).
 		ExecContext(ctx)
@@ -816,7 +828,7 @@ func (r *TransactionCacheRepo) scanTransaction(s scanner) (*domain.Transaction, 
 		&idStr, &userIDStr, &t.TransactionID, &t.AccountID,
 		&t.Amount, &dateVal, &dt, &t.Name,
 		&merchantIDStr, &categoryStr, &t.PFCPrimary, &t.PFCDetailed, &t.PaymentChannel,
-		&pendingVal, &syncedAt, &t.CorrectedPFCPrimary, &t.CorrectedPFCDetailed, &correctedAt,
+		&pendingVal, &syncedAt, &t.PlaidPFCPrimary, &t.PlaidPFCDetailed, &correctedAt,
 		&recurringVal,
 		&mCanonical, &mLogo,
 	)

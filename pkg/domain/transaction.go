@@ -37,10 +37,14 @@ type Transaction struct {
 	// Set by the recurring-detection pass, not by Plaid. Drives the frontend badge and
 	// renders independently of whether a receipt is attached.
 	Recurring            bool       `json:"recurring"`
-	SyncedAt             time.Time  `json:"synced_at,omitempty"`
-	CorrectedPFCPrimary  *string    `json:"corrected_pfc_primary,omitempty"`
-	CorrectedPFCDetailed *string    `json:"corrected_pfc_detailed,omitempty"`
-	CategoryCorrectedAt  *time.Time `json:"category_corrected_at,omitempty"`
+	SyncedAt time.Time `json:"synced_at,omitempty"`
+	// PlaidPFC* are the category Plaid assigned, refreshed on every sync.
+	// PFCPrimary/PFCDetailed above are the effective category a client renders,
+	// which a correction may overwrite; the two differ exactly when this
+	// transaction has been corrected.
+	PlaidPFCPrimary     *string    `json:"plaid_pfc_primary,omitempty"`
+	PlaidPFCDetailed    *string    `json:"plaid_pfc_detailed,omitempty"`
+	CategoryCorrectedAt *time.Time `json:"category_corrected_at,omitempty"`
 }
 
 // TransactionLocation mirrors Plaid's transaction `location` object. Persisted as a
@@ -156,8 +160,8 @@ type TransactionResponse struct {
 	Pending              bool             `json:"pending"`
 	Recurring            bool             `json:"recurring"`
 	MerchantLogo         *string          `json:"merchantLogo"`
-	CorrectedPFCPrimary  *string          `json:"correctedPfcPrimary,omitempty"`
-	CorrectedPFCDetailed *string          `json:"correctedPfcDetailed,omitempty"`
+	PlaidPFCPrimary      *string          `json:"plaidPfcPrimary,omitempty"`
+	PlaidPFCDetailed     *string          `json:"plaidPfcDetailed,omitempty"`
 	Receipt              *AttachedReceipt `json:"receipt,omitempty"`
 	// SuggestedReceipt is populated only when Receipt is nil: a proposal the
 	// user has not acted on yet. Kept in its own field so a client can never

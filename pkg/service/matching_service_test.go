@@ -89,7 +89,7 @@ func (s *stubTxCacheRepo) SearchUnmatched(_ context.Context, _ uuid.UUID, _ stri
 func (s *stubTxCacheRepo) FindByTransactionID(_ context.Context, _ string) (*domain.Transaction, error) {
 	return nil, nil
 }
-func (s *stubTxCacheRepo) UpdateCorrectedCategory(_ context.Context, _ string, _, _ string) error {
+func (s *stubTxCacheRepo) ApplyCategoryCorrection(_ context.Context, _ string, _, _ string) error {
 	return nil
 }
 func (s *stubTxCacheRepo) FindRecurringCandidates(_ context.Context, _ uuid.UUID) ([]domain.RecurringCandidate, error) {
