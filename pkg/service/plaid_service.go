@@ -148,7 +148,16 @@ func (s *PlaidService) CreateLinkToken(ctx context.Context, userID uuid.UUID) (i
 		[]plaid.CountryCode{plaid.COUNTRYCODE_US},
 		plaid.LinkTokenCreateRequestUser{ClientUserId: userID.String()},
 	)
+
 	req.SetProducts([]plaid.Products{plaid.PRODUCTS_TRANSACTIONS})
+	// Request a full year of transaction history at initial Link. Plaid defaults
+    // to 90 days when unset; 365 gives us a year (max supported is 730). Note this
+    // only applies to newly-linked Items — already-connected Items keep the window
+    // they were linked with until re-linked.
+    tx := plaid.NewLinkTokenTransactions()
+    tx.SetDaysRequested(365)
+    req.SetTransactions(*tx)
+	
 	if s.redirectURI != "" {
 		req.SetRedirectUri(s.redirectURI)
 	}
