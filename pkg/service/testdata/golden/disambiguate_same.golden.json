@@ -1,16 +1,16 @@
 {
-  "request_sha256": "b284a3d62d84dd8f727f6787bf37d1d95fddb6c98a13667257b6eb197c344db2",
+  "request_sha256": "dac881c5e793ae540df902111e40e0be1d6628617a137fb623829e5b1680538e",
   "response": {
-    "id": "chatcmpl-Dl8Azy6EJ37kkchrmj1tz90XKEHp9",
+    "id": "chatcmpl-EH7SfIpXaR6sjOyokQdIlzbBPsit4",
     "object": "chat.completion",
-    "created": 1780125217,
+    "created": 1787748965,
     "model": "gpt-5-nano-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"confidence\":0.95,\"reason\":\"SBUX is a recognized abbreviation for Starbucks; both entries refer to the same company, with STARBUCKS as an alias/variant. Not a different business.\",\"same_business\":true}",
+          "content": "{\"confidence\":0.95,\"reason\":\"SBUX is a common abbreviation for Starbucks and STARBUCKS is the full name; regardless of how shown, they refer to the same merchant (Starbucks). The presence of a store number (#123) does not indicate a different business. Per rules, common abbreviations are fine and this is unmistakably one business.\",\"same_business\":true}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 288,
-      "completion_tokens": 703,
-      "total_tokens": 991,
+      "prompt_tokens": 362,
+      "completion_tokens": 95,
+      "total_tokens": 457,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 640,
+        "reasoning_tokens": 0,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

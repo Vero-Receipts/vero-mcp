@@ -39,6 +39,7 @@ type ReceiptRepository interface {
 	FindUnmatchedValid(ctx context.Context, userID uuid.UUID) ([]domain.Receipt, error)
 	Update(ctx context.Context, receipt *domain.Receipt) error
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string) error
+	MarkMatchAttempted(ctx context.Context, id uuid.UUID, at *time.Time) error
 	UpdateThumbnailURL(ctx context.Context, id uuid.UUID, thumbnailURL string) error
 	FindWithoutThumbnails(ctx context.Context, offset, limit int) ([]domain.Receipt, error)
 	Delete(ctx context.Context, id uuid.UUID) error

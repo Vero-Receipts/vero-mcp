@@ -116,6 +116,9 @@ func (r *fakeReceiptRepo) FindUnmatchedValid(context.Context, uuid.UUID) ([]doma
 }
 func (r *fakeReceiptRepo) Update(context.Context, *domain.Receipt) error     { return nil }
 func (r *fakeReceiptRepo) UpdateStatus(context.Context, uuid.UUID, string) error { return nil }
+func (r *fakeReceiptRepo) MarkMatchAttempted(context.Context, uuid.UUID, *time.Time) error {
+	return nil
+}
 func (r *fakeReceiptRepo) UpdateThumbnailURL(context.Context, uuid.UUID, string) error {
 	return nil
 }

@@ -1,16 +1,16 @@
 {
-  "request_sha256": "413985997d2dfac7cb7a1685e1a7d4da47dba831e74331119026709e9945935c",
+  "request_sha256": "4d35a19f329e18541735228d27521b7cac29cba3242c4738a9c5fdbaf6d580bd",
   "response": {
-    "id": "chatcmpl-Dl8B4UqlkNmzSFnQmhOztE6Ggn6Gh",
+    "id": "chatcmpl-EH7ShEgbKxM0HC7FAfclfGUG9VOSC",
     "object": "chat.completion",
-    "created": 1780125222,
+    "created": 1787748967,
     "model": "gpt-5-nano-2025-08-07",
     "choices": [
       {
         "index": 0,
         "message": {
           "role": "assistant",
-          "content": "{\"confidence\":0.95,\"reason\":\"Although both names contain 'Apple', 'Apple Store' and 'Applebee's' refer to distinct businesses (Apple Inc. retail stores vs. a separate restaurant chain). Per the hard rule, different companies are never the same.\",\"same_business\":false}",
+          "content": "{\"confidence\":0.85,\"reason\":\"Apple Store and Applebee's are clearly different businesses (Apple Store = Apple retail/store; Applebee's is a restaurant chain). The only overlap is the word 'Apple', but this does not imply the same business. There is no known abbreviation or DBA linking them; no POS prefixes indicative of the same entity.\",\"same_business\":false}",
           "refusal": null,
           "annotations": []
         },
@@ -18,15 +18,15 @@
       }
     ],
     "usage": {
-      "prompt_tokens": 286,
-      "completion_tokens": 715,
-      "total_tokens": 1001,
+      "prompt_tokens": 360,
+      "completion_tokens": 92,
+      "total_tokens": 452,
       "prompt_tokens_details": {
         "cached_tokens": 0,
         "audio_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 640,
+        "reasoning_tokens": 0,
         "audio_tokens": 0,
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0

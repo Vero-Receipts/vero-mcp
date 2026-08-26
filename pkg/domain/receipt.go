@@ -40,6 +40,13 @@ type Receipt struct {
 	IsSubscription  *bool           `json:"is_subscription,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
+
+	// MatchAttemptedAt is when the matching pipeline last ran for this receipt.
+	// Nil means never. The pipeline compares it against UpdatedAt and against the
+	// sync stamps of the candidates in the receipt's window to decide whether
+	// anything has moved since — re-deciding an unchanged receipt costs an LLM
+	// call and an audit row for an answer that cannot have changed.
+	MatchAttemptedAt *time.Time `json:"match_attempted_at,omitempty"`
 }
 
 type LineItem struct {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,7 +192,7 @@ func TestEvaluateCandidate_HighMerchantNoLLM(t *testing.T) {
 	cs := testScores(0.90, 0.85, 1.0, "exact", 0.0, 0)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestEvaluateCandidate_HighMerchantWeakAmount(t *testing.T) {
 	cs := testScores(0.90, 0.70, 0.50, "exact", 0.0, 4)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -249,7 +250,7 @@ func TestEvaluateCandidate_LLMConfirms_Matched(t *testing.T) {
 	cs := testScores(0.45, 0.85, 1.0, "word_overlap_1", 0.0, 0)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -283,33 +284,31 @@ func TestEvaluateCandidate_LLMRejects(t *testing.T) {
 	cs := testScores(0.45, 0.85, 1.0, "word_overlap_1", 0.0, 0)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// An LLM "different businesses" verdict settles the merchant dimension as
-	// disagreeing — it does not kill the candidate. Amount and date both hold,
-	// so this still reaches the user as a proposal to accept or dismiss.
-	if result == nil {
-		t.Fatal("expected a suggestion: merchant disagrees but amount and date are strong")
-	}
-	if result.MatchType != "suggested" {
-		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
-	}
-	if result.Flag != domain.FlagMerchantMismatch {
-		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagMerchantMismatch)
-	}
-	if result.Confidence > 0.75 {
-		t.Errorf("Confidence = %.4f, want <= 0.75 (capped for unconfirmed merchant)", result.Confidence)
+	// Amount and date agreeing is exactly what put this candidate in front of the
+	// LLM, so they cannot then be the reason to keep it once the LLM has said the
+	// merchants are unrelated. A same-price, same-day coincidence is the failure
+	// mode being ruled out, not evidence in the candidate's favour.
+	if result != nil {
+		t.Fatalf("expected the candidate to be discarded, got %q", result.MatchType)
 	}
 	if len(audit.entries) == 0 {
 		t.Fatal("expected audit entry")
 	}
-	if audit.entries[0].Outcome != "suggested" {
-		t.Errorf("audit Outcome = %q, want \"suggested\"", audit.entries[0].Outcome)
+	if audit.entries[0].Outcome != "rejected" {
+		t.Errorf("audit Outcome = %q, want \"rejected\"", audit.entries[0].Outcome)
 	}
 	if !strings.Contains(audit.entries[0].Reason, "LLM rejected") {
 		t.Errorf("audit Reason = %q, want to contain \"LLM rejected\"", audit.entries[0].Reason)
+	}
+	if !audit.entries[0].LLMUsed {
+		t.Error("expected LLMUsed=true on the audit entry")
+	}
+	if audit.entries[0].LLMConfidence == nil || *audit.entries[0].LLMConfidence != 0.90 {
+		t.Errorf("audit LLMConfidence = %v, want 0.90", audit.entries[0].LLMConfidence)
 	}
 }
 
@@ -322,7 +321,7 @@ func TestEvaluateCandidate_LowMerchantScore(t *testing.T) {
 	cs := testScores(0.20, 0.95, 1.0, "none", 0.0, 0)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -356,7 +355,7 @@ func TestEvaluateCandidate_MissingMerchantNames(t *testing.T) {
 	cs.TransactionID = "tx-1"
 	cs.MerchantKnown = false
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -387,7 +386,7 @@ func TestEvaluateCandidate_LLMError_StrongFallback(t *testing.T) {
 	cs := testScores(0.45, 0.90, 0.80, "word_overlap_1", 2.0, 2)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -421,7 +420,7 @@ func TestEvaluateCandidate_LLMError_WeakReject(t *testing.T) {
 	cs := testScores(0.45, 0.70, 0.50, "word_overlap_1", 8.0, 4)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -450,7 +449,7 @@ func TestEvaluateCandidate_Flag_AmountMismatch(t *testing.T) {
 	cs := testScores(0.90, 0.70, 1.0, "exact", 8.0, 0) // AmountDiffPct=8 > 5
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -471,7 +470,7 @@ func TestEvaluateCandidate_Flag_DateMismatch(t *testing.T) {
 	cs := testScores(0.90, 0.85, 0.70, "exact", 1.0, 3) // DateDiffDays=3 > 2, AmountDiffPct=1 <= 5
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -492,7 +491,7 @@ func TestEvaluateCandidate_Flag_Clean(t *testing.T) {
 	cs := testScores(0.90, 0.85, 1.0, "exact", 1.0, 0)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -522,7 +521,7 @@ func TestEvaluateCandidate_NoMerchant_StrictMatch(t *testing.T) {
 	cs.TransactionID = "tx-1"
 	cs.MerchantKnown = false
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -564,7 +563,7 @@ func TestEvaluateCandidate_NoAmount_MerchantAndDateStrong(t *testing.T) {
 	cs.AmountKnown = false
 	cs.CompositeScore = cs.Composite()
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -593,7 +592,7 @@ func TestEvaluateCandidate_NoDate_MerchantAndAmountStrong(t *testing.T) {
 	cs.DateKnown = false
 	cs.CompositeScore = cs.Composite()
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -618,7 +617,7 @@ func TestEvaluateCandidate_Veto_AmountFarOff(t *testing.T) {
 	cs := testScores(0.90, 0.40, 1.0, "exact", 18.0, 0)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -639,7 +638,7 @@ func TestEvaluateCandidate_Veto_DateFarOff(t *testing.T) {
 	cs := testScores(0.90, 1.0, 0.20, "exact", 0.0, 9)
 	cs.TransactionID = "tx-1"
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -664,7 +663,7 @@ func TestEvaluateCandidate_TwoDimensionsMissingOrWeak_Rejected(t *testing.T) {
 	cs.DateKnown = false
 	cs.CompositeScore = cs.Composite()
 
-	result, err := svc.evaluateCandidate(context.Background(), receipt, tx, cs)
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -869,5 +868,490 @@ func TestMatchReceipt_DateFarOff_YieldsNothing(t *testing.T) {
 	}
 	if outcome != nil {
 		t.Errorf("expected nil outcome for a 12-day date gap, got %+v", outcome)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LLM vetting of unconfirmed merchants
+//
+// Amount and date agreeing on their own is what puts a candidate in front of a
+// user, and it is also what two unrelated merchants produce by coincidence. The
+// merchant name is the only thing that separates the two, so every candidate
+// reaching the user on amount+date alone has to survive an LLM verdict first.
+// ---------------------------------------------------------------------------
+
+// countingDisambiguateServer serves a fixed verdict and records how many
+// requests it actually answered, so tests can assert on LLM spend.
+func countingDisambiguateServer(t *testing.T, result MerchantDisambiguationResult, calls *int32) *httptest.Server {
+	t.Helper()
+	contentJSON, _ := json.Marshal(result)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(calls, 1)
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]string{"content": string(contentJSON)}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+// forbiddenServer fails the test if the LLM is consulted at all.
+func forbiddenServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("LLM was called but this candidate should have resolved deterministically")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+}
+
+func TestEvaluateCandidate_IrrelevantMerchantVettedByLLM(t *testing.T) {
+	ts := disambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: false,
+		Confidence:   0.95,
+		Reason:       "a coffee shop and a hardware store are unrelated",
+	})
+	defer ts.Close()
+
+	audit := &mockAuditRepo{}
+	svc := makeMatchingService(t, ts, audit, &mockAliasRepo{})
+
+	receipt := testReceipt("Blue Bottle Coffee", 42.17)
+	tx := testTransaction("tx-1", 42.17, "HARBOR SUPPLY CO")
+	// Nothing in common: the deterministic scorer has no opinion at all.
+	cs := testScores(0.0, 1.0, 1.0, "none", 0.0, 0)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected the candidate to be discarded, got %q", result.MatchType)
+	}
+	if len(audit.entries) == 0 || audit.entries[0].Outcome != "rejected" {
+		t.Fatalf("expected a rejected audit entry, got %+v", audit.entries)
+	}
+	if !audit.entries[0].LLMUsed {
+		t.Error("expected LLMUsed=true: a zero merchant score must still be vetted")
+	}
+}
+
+func TestEvaluateCandidate_ZeroMerchantScoreStillCallsLLM(t *testing.T) {
+	ts := disambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: true,
+		Confidence:   0.95,
+		Reason:       "SQ *BLUEBTL is Blue Bottle Coffee behind a Square prefix",
+	})
+	defer ts.Close()
+
+	svc := makeMatchingService(t, ts, &mockAuditRepo{}, &mockAliasRepo{})
+
+	receipt := testReceipt("Blue Bottle Coffee", 10.00)
+	tx := testTransaction("tx-1", 10.00, "SQ *BLUEBTL 4471")
+	cs := testScores(0.0, 0.95, 0.85, "none", 1.0, 2)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected a match: the LLM confirmed the merchant")
+	}
+	// The old gate floored at MerchantScore >= 0.40, so this pair was never asked
+	// about and could only ever have surfaced as an unvetted suggestion.
+	if !result.LLMUsed {
+		t.Error("expected LLMUsed=true for a 0.0 merchant score")
+	}
+	if result.MatchType != "matched" {
+		t.Errorf("MatchType = %q, want \"matched\"", result.MatchType)
+	}
+}
+
+func TestEvaluateCandidate_LLMLowConfidenceYesDiscarded(t *testing.T) {
+	ts := disambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: true,
+		Confidence:   0.35,
+		Reason:       "both contain the word market, but that is all",
+	})
+	defer ts.Close()
+
+	audit := &mockAuditRepo{}
+	svc := makeMatchingService(t, ts, audit, &mockAliasRepo{})
+
+	receipt := testReceipt("Green Market", 10.00)
+	tx := testTransaction("tx-1", 10.00, "MARKET STREET DINER")
+	cs := testScores(0.45, 1.0, 1.0, "word_overlap_1", 0.0, 0)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// A yes the model itself is unsure of is no better than a coincidence.
+	if result != nil {
+		t.Fatalf("expected the candidate to be discarded, got %q", result.MatchType)
+	}
+	if len(audit.entries) == 0 || audit.entries[0].Outcome != "rejected" {
+		t.Fatalf("expected a rejected audit entry, got %+v", audit.entries)
+	}
+}
+
+func TestEvaluateCandidate_LLMSoftYesSuggestsOnly(t *testing.T) {
+	ts := disambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: true,
+		Confidence:   0.72,
+		Reason:       "plausibly the same chain, but the location differs",
+	})
+	defer ts.Close()
+
+	svc := makeMatchingService(t, ts, &mockAuditRepo{}, &mockAliasRepo{})
+
+	receipt := testReceipt("Parlor Doughnuts", 10.00)
+	tx := testTransaction("tx-1", 10.00, "PARLOR NASHVILLE")
+	cs := testScores(0.45, 1.0, 1.0, "word_overlap_1", 0.0, 0)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected a suggestion")
+	}
+	// Confident enough to show a human, not confident enough to link on its own.
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
+	}
+	if result.Confidence > 0.75 {
+		t.Errorf("Confidence = %.4f, want <= 0.75 (capped for unconfirmed merchant)", result.Confidence)
+	}
+	if result.Scores.MerchantScore != 0.72 {
+		t.Errorf("MerchantScore = %.2f, want 0.72 (the LLM's own confidence)", result.Scores.MerchantScore)
+	}
+}
+
+func TestEvaluateCandidate_LLMSoftYesAtFloorSuggests(t *testing.T) {
+	ts := disambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: true,
+		Confidence:   llmSuggestConfidence,
+		Reason:       "exactly at the floor",
+	})
+	defer ts.Close()
+
+	svc := makeMatchingService(t, ts, &mockAuditRepo{}, &mockAliasRepo{})
+
+	receipt := testReceipt("Parlor Doughnuts", 10.00)
+	tx := testTransaction("tx-1", 10.00, "PARLOR NASHVILLE")
+	cs := testScores(0.45, 1.0, 1.0, "word_overlap_1", 0.0, 0)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The floor is inclusive; one notch below it the candidate dies.
+	if result == nil {
+		t.Fatal("expected a suggestion at exactly the suggest floor")
+	}
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
+	}
+}
+
+func TestEvaluateCandidate_LLMErrorFailsOpen(t *testing.T) {
+	ts := errorServer(t, http.StatusInternalServerError)
+	defer ts.Close()
+
+	svc := makeMatchingService(t, ts, &mockAuditRepo{}, &mockAliasRepo{})
+
+	receipt := testReceipt("Blue Bottle Coffee", 10.00)
+	tx := testTransaction("tx-1", 10.00, "HARBOR SUPPLY CO")
+	cs := testScores(0.0, 1.0, 1.0, "none", 0.0, 0)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// An OpenAI outage should cost recall, not correctness on everything else:
+	// the candidate degrades to today's behaviour rather than vanishing.
+	if result == nil {
+		t.Fatal("expected a suggestion when the LLM cannot answer")
+	}
+	if result.MatchType != "suggested" {
+		t.Errorf("MatchType = %q, want \"suggested\"", result.MatchType)
+	}
+	if result.LLMUsed {
+		t.Error("expected LLMUsed=false when the call failed")
+	}
+	if result.Flag != domain.FlagMerchantMismatch {
+		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagMerchantMismatch)
+	}
+}
+
+func TestEvaluateCandidate_WeakAmountSkipsLLM(t *testing.T) {
+	ts := forbiddenServer(t)
+	defer ts.Close()
+
+	svc := makeMatchingService(t, ts, &mockAuditRepo{}, &mockAliasRepo{})
+
+	receipt := testReceipt("Starbucks", 10.00)
+	tx := testTransaction("tx-1", 10.70, "SOME OTHER PLACE")
+	// Amount is inside tolerance but not strong, so this could only ever have
+	// been a two-weak rejection. Paying for a verdict would change nothing.
+	cs := testScores(0.45, 0.70, 1.0, "word_overlap_1", 7.0, 0)
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected rejection by the agreement rule, got %q", result.MatchType)
+	}
+}
+
+func TestEvaluateCandidate_NoMerchantOnReceiptSkipsLLM(t *testing.T) {
+	ts := forbiddenServer(t)
+	defer ts.Close()
+
+	svc := makeMatchingService(t, ts, &mockAuditRepo{}, &mockAliasRepo{})
+
+	receipt := testReceipt("", 10.00)
+	tx := testTransaction("tx-1", 10.00, "HARBOR SUPPLY CO")
+	cs := testScores(0.0, 1.0, 1.0, "none", 0.0, 0)
+	cs.MerchantKnown = false
+	cs.CompositeScore = cs.Composite()
+	cs.TransactionID = "tx-1"
+
+	result, err := svc.evaluateCandidate(context.Background(), nil, receipt, tx, cs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// There is no name to ask about. The receipt is unreadable on that dimension,
+	// which is a different fact from two names disagreeing.
+	if result == nil {
+		t.Fatal("expected a suggestion: amount and date carry an unreadable merchant")
+	}
+	if result.Flag != domain.FlagNoMerchant {
+		t.Errorf("Flag = %q, want %q", result.Flag, domain.FlagNoMerchant)
+	}
+}
+
+func TestMatchReceipt_MemoDedupesRepeatedPair(t *testing.T) {
+	var calls int32
+	ts := countingDisambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: false,
+		Confidence:   0.95,
+		Reason:       "unrelated businesses",
+	}, &calls)
+	defer ts.Close()
+
+	// Two charges, same merchant text, both colliding with the receipt.
+	txRepo := &stubTxCacheRepo{tight: []domain.Transaction{
+		*testTransaction("tx-1", 10.00, "HARBOR SUPPLY CO"),
+		*testTransaction("tx-2", 10.00, "HARBOR SUPPLY CO"),
+	}}
+	svc := makeMatchingServiceWithTxRepo(t, ts, &mockAuditRepo{}, &mockAliasRepo{}, txRepo)
+
+	if _, err := svc.MatchReceipt(context.Background(), uuid.New(), testReceipt("Blue Bottle Coffee", 10.00)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("LLM calls = %d, want 1 (the pair repeats within one run)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Re-evaluation watermark
+//
+// The sweep re-runs the whole unmatched backlog whenever any single receipt or
+// transaction arrives. Without a watermark the LLM is re-asked the same question
+// on every sweep, for an answer that cannot have changed.
+// ---------------------------------------------------------------------------
+
+// syncedTransaction is a candidate carrying an explicit sync stamp, which is
+// what the skip compares against.
+func syncedTransaction(txID string, amount float64, name string, syncedAt time.Time) domain.Transaction {
+	tx := *testTransaction(txID, amount, name)
+	tx.SyncedAt = syncedAt
+	return tx
+}
+
+func TestMatchReceipt_UnchangedReceiptSkipsSecondSweep(t *testing.T) {
+	var calls int32
+	ts := countingDisambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: false,
+		Confidence:   0.95,
+		Reason:       "unrelated businesses",
+	}, &calls)
+	defer ts.Close()
+
+	synced := time.Now().Add(-time.Hour)
+	txRepo := &stubTxCacheRepo{tight: []domain.Transaction{
+		syncedTransaction("tx-1", 10.00, "HARBOR SUPPLY CO", synced),
+	}}
+	svc := makeMatchingServiceWithTxRepo(t, ts, &mockAuditRepo{}, &mockAliasRepo{}, txRepo)
+
+	receipt := testReceipt("Blue Bottle Coffee", 10.00)
+	receipt.UpdatedAt = time.Now().Add(-2 * time.Hour)
+
+	if _, err := svc.MatchReceipt(context.Background(), uuid.New(), receipt); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("first run LLM calls = %d, want 1", got)
+	}
+
+	// The caller stamps the receipt after a verdict; nothing has moved since.
+	attempted := time.Now()
+	receipt.MatchAttemptedAt = &attempted
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), receipt)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if outcome == nil || !outcome.Unchanged {
+		t.Fatalf("expected an Unchanged outcome, got %+v", outcome)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("LLM calls = %d, want 1 (the second sweep must not re-ask)", got)
+	}
+}
+
+func TestMatchReceipt_NewCandidateDefeatsSkip(t *testing.T) {
+	var calls int32
+	ts := countingDisambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: false,
+		Confidence:   0.95,
+		Reason:       "unrelated businesses",
+	}, &calls)
+	defer ts.Close()
+
+	txRepo := &stubTxCacheRepo{}
+	svc := makeMatchingServiceWithTxRepo(t, ts, &mockAuditRepo{}, &mockAliasRepo{}, txRepo)
+
+	attempted := time.Now().Add(-time.Hour)
+	receipt := testReceipt("Blue Bottle Coffee", 10.00)
+	receipt.UpdatedAt = time.Now().Add(-2 * time.Hour)
+	receipt.MatchAttemptedAt = &attempted
+
+	// A charge synced after the last attempt is one the receipt has never been
+	// weighed against, so the previous verdict does not cover it.
+	txRepo.tight = []domain.Transaction{
+		syncedTransaction("tx-new", 10.00, "HARBOR SUPPLY CO", time.Now()),
+	}
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), receipt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome != nil && outcome.Unchanged {
+		t.Fatal("expected evaluation: a newly synced candidate entered the window")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("LLM calls = %d, want 1", got)
+	}
+}
+
+func TestMatchReceipt_RepricedPendingDefeatsSkip(t *testing.T) {
+	var calls int32
+	ts := countingDisambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: true,
+		Confidence:   0.95,
+		Reason:       "same business",
+	}, &calls)
+	defer ts.Close()
+
+	txRepo := &stubTxCacheRepo{}
+	svc := makeMatchingServiceWithTxRepo(t, ts, &mockAuditRepo{}, &mockAliasRepo{}, txRepo)
+
+	attempted := time.Now().Add(-time.Hour)
+	receipt := testReceipt("Blue Bottle Coffee", 10.00)
+	receipt.UpdatedAt = time.Now().Add(-2 * time.Hour)
+	receipt.MatchAttemptedAt = &attempted
+
+	// Same transaction_id as before, but the pending charge has posted and its
+	// amount now matches the receipt. UpsertBatch rewrites synced_at in place, so
+	// that stamp is the only record that the row became matchable at all.
+	txRepo.tight = []domain.Transaction{
+		syncedTransaction("tx-1", 10.00, "SQ *BLUEBTL 4471", time.Now()),
+	}
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), receipt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome == nil || outcome.Unchanged {
+		t.Fatal("expected evaluation: a repriced charge must not be skipped")
+	}
+	if outcome.Auto == nil {
+		t.Fatalf("expected an auto-match, got %+v", outcome)
+	}
+}
+
+func TestMatchReceipt_EditedReceiptDefeatsSkip(t *testing.T) {
+	var calls int32
+	ts := countingDisambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: false,
+		Confidence:   0.95,
+		Reason:       "unrelated businesses",
+	}, &calls)
+	defer ts.Close()
+
+	synced := time.Now().Add(-2 * time.Hour)
+	txRepo := &stubTxCacheRepo{tight: []domain.Transaction{
+		syncedTransaction("tx-1", 10.00, "HARBOR SUPPLY CO", synced),
+	}}
+	svc := makeMatchingServiceWithTxRepo(t, ts, &mockAuditRepo{}, &mockAliasRepo{}, txRepo)
+
+	attempted := time.Now().Add(-time.Hour)
+	receipt := testReceipt("Blue Bottle Coffee", 10.00)
+	receipt.MatchAttemptedAt = &attempted
+	// Re-OCR corrected the merchant name after the last attempt.
+	receipt.UpdatedAt = time.Now()
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), receipt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome != nil && outcome.Unchanged {
+		t.Fatal("expected evaluation: the receipt itself changed")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("LLM calls = %d, want 1", got)
+	}
+}
+
+func TestMatchReceipt_UnstampedCandidateForcesEvaluation(t *testing.T) {
+	var calls int32
+	ts := countingDisambiguateServer(t, MerchantDisambiguationResult{
+		SameBusiness: false,
+		Confidence:   0.95,
+		Reason:       "unrelated businesses",
+	}, &calls)
+	defer ts.Close()
+
+	// SQLite leaves synced_at nullable, so a candidate can arrive with no stamp.
+	// Unknown must never be read as "old enough to skip".
+	txRepo := &stubTxCacheRepo{tight: []domain.Transaction{
+		*testTransaction("tx-1", 10.00, "HARBOR SUPPLY CO"),
+	}}
+	svc := makeMatchingServiceWithTxRepo(t, ts, &mockAuditRepo{}, &mockAliasRepo{}, txRepo)
+
+	attempted := time.Now().Add(-time.Hour)
+	receipt := testReceipt("Blue Bottle Coffee", 10.00)
+	receipt.UpdatedAt = time.Now().Add(-2 * time.Hour)
+	receipt.MatchAttemptedAt = &attempted
+
+	outcome, err := svc.MatchReceipt(context.Background(), uuid.New(), receipt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if outcome != nil && outcome.Unchanged {
+		t.Fatal("expected evaluation: a candidate with no sync stamp is unknown, not old")
 	}
 }
