@@ -24,10 +24,10 @@ func (r *MatchAuditRepo) Create(ctx context.Context, entry *domain.MatchAuditEnt
 	query, args, err := r.SQ.Insert("match_audit_log").
 		Columns("id", "receipt_id", "transaction_id", "amount_score", "date_score",
 			"merchant_score", "composite_score", "llm_used", "llm_merchant_confirm",
-			"outcome", "reason").
+			"llm_confidence", "outcome", "reason").
 		Values(entry.ID.String(), entry.ReceiptID.String(), entry.TransactionID,
 			entry.AmountScore, entry.DateScore, entry.MerchantScore, entry.CompositeScore,
-			entry.LLMUsed, entry.LLMMerchantConfirm, entry.Outcome, entry.Reason).
+			entry.LLMUsed, entry.LLMMerchantConfirm, entry.LLMConfidence, entry.Outcome, entry.Reason).
 		Suffix("RETURNING created_at").
 		ToSql()
 	if err != nil {

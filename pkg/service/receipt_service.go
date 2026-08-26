@@ -433,6 +433,16 @@ func (s *ReceiptService) TryMatch(ctx context.Context, userID uuid.UUID, receipt
 // by the single-receipt path (TryMatch) and the batch sweep (SuggestMatches).
 // Reports whether a settled match was created.
 func (s *ReceiptService) commitOutcome(ctx context.Context, userID uuid.UUID, receipt *domain.Receipt, outcome *MatchOutcome) bool {
+	// The pipeline declined to re-decide, so there is no new verdict to write.
+	// Falling through would hand storeSuggestions an empty outcome, which it
+	// reads as "nothing supports these any more" and clears — deleting live
+	// proposals that were never reconsidered.
+	if outcome != nil && outcome.Unchanged {
+		return false
+	}
+
+	s.markMatchAttempted(ctx, receipt)
+
 	if outcome == nil || outcome.Auto == nil {
 		s.storeSuggestions(ctx, userID, receipt, outcome)
 		return false
@@ -474,6 +484,17 @@ func (s *ReceiptService) commitOutcome(ctx context.Context, userID uuid.UUID, re
 		go s.categorySvc.CorrectCategoryAfterMatch(context.Background(), receipt, result.Transaction)
 	}
 	return true
+}
+
+// markMatchAttempted records that the pipeline reached a verdict for this
+// receipt, so an unchanged backlog is not re-decided on the next sweep.
+func (s *ReceiptService) markMatchAttempted(ctx context.Context, receipt *domain.Receipt) {
+	now := time.Now().UTC()
+	if err := s.receiptRepo.MarkMatchAttempted(ctx, receipt.ID, &now); err != nil {
+		slog.Error("match-pipeline: mark match attempted", "error", err, "receipt_id", receipt.ID)
+		return
+	}
+	receipt.MatchAttemptedAt = &now
 }
 
 // storeSuggestions replaces a receipt's pending proposals with the current
@@ -1097,7 +1118,16 @@ func (s *ReceiptService) RejectSuggestion(ctx context.Context, userID, receiptID
 	if err != nil {
 		return err
 	}
-	return s.suggestionRepo.MarkRejected(ctx, receiptID, suggestion.TransactionID)
+	if err := s.suggestionRepo.MarkRejected(ctx, receiptID, suggestion.TransactionID); err != nil {
+		return err
+	}
+
+	// A rejection changes what the candidate query will return for this receipt,
+	// so its last verdict no longer describes the current world.
+	if err := s.receiptRepo.MarkMatchAttempted(ctx, receiptID, nil); err != nil {
+		slog.Error("match-pipeline: clear match attempt on reject", "error", err, "receipt_id", receiptID)
+	}
+	return nil
 }
 
 func (s *ReceiptService) Unmatch(ctx context.Context, userID, receiptID uuid.UUID) error {
@@ -1111,6 +1141,11 @@ func (s *ReceiptService) Unmatch(ctx context.Context, userID, receiptID uuid.UUI
 
 	if err := s.matchRepo.DeleteByReceiptID(ctx, receiptID); err != nil {
 		return err
+	}
+
+	// Back in the pool: the receipt has to be reconsidered from scratch.
+	if err := s.receiptRepo.MarkMatchAttempted(ctx, receiptID, nil); err != nil {
+		slog.Error("match-pipeline: clear match attempt on unmatch", "error", err, "receipt_id", receiptID)
 	}
 	return s.receiptRepo.UpdateStatus(ctx, receiptID, "unmatched")
 }

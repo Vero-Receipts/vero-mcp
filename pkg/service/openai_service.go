@@ -807,6 +807,10 @@ Rules:
   Examples of DIFFERENT businesses: "Apple" != "Applebee's", "Post Bar" != "US Post Office",
   "CVS" != "Target", "Netflix" != "Spotify", "DTE Energy" != "Spotify".
 - When in doubt, say false. A wrong "true" is much worse than a wrong "false".
+- confidence is how sure you are of the same_business answer you gave: >=0.9 the
+  names are unmistakably one business (a known abbreviation, a POS prefix, a store
+  number, a DBA); 0.5-0.9 they plausibly are but the evidence is thin; <0.5 you
+  are guessing.
 
 Respond with a JSON object.`, receiptMerchant, txSide)
 
@@ -834,7 +838,12 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 				"schema": schema,
 			},
 		},
-		"max_completion_tokens": 2048,
+		// gpt-5 is a reasoning model and max_completion_tokens covers reasoning plus
+		// output. "minimal" keeps reasoning cheap — this is a classification, not a
+		// puzzle — and the generous budget guarantees room for the JSON payload, so
+		// the response is never truncated to empty (finish_reason=length).
+		"reasoning_effort":      "minimal",
+		"max_completion_tokens": 4096,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -852,6 +861,7 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Error *struct {
 			Message string `json:"message"`
@@ -867,8 +877,13 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 		return nil, fmt.Errorf("no choices in OpenAI response")
 	}
 
+	content := completion.Choices[0].Message.Content
+	if content == "" {
+		return nil, fmt.Errorf("empty response content (finish_reason=%q)", completion.Choices[0].FinishReason)
+	}
+
 	var result MerchantDisambiguationResult
-	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &result); err != nil {
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
 		return nil, fmt.Errorf("decode disambiguation: %w", err)
 	}
 

@@ -17,6 +17,7 @@ type MatchAuditEntry struct {
 	CompositeScore     float64   `json:"composite_score"`
 	LLMUsed            bool      `json:"llm_used"`
 	LLMMerchantConfirm *bool     `json:"llm_merchant_confirm,omitempty"`
+	LLMConfidence      *float64  `json:"llm_confidence,omitempty"`
 	Outcome            string    `json:"outcome"` // "auto", "suggested", "rejected"
 	Reason             string    `json:"reason,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`

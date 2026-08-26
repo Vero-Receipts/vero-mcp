@@ -39,7 +39,7 @@ var receiptCols = []string{
 	"source", "status",
 	"content_hash", "gmail_message_id", "order_id", "merchant_key", "duplicate_of",
 	"is_subscription",
-	"created_at", "updated_at",
+	"created_at", "updated_at", "match_attempted_at",
 }
 
 // isUniqueViolation reports whether err is a Postgres 23505 unique constraint
@@ -107,7 +107,8 @@ func (r *ReceiptRepo) Create(ctx context.Context, rcpt *domain.Receipt) error {
 			rcpt.Source, rcpt.Status,
 			rcpt.ContentHash, rcpt.GmailMessageID, rcpt.OrderID, rcpt.MerchantKey, duplicateOfStr,
 			rcpt.IsSubscription,
-			now, now,
+			// match_attempted_at: a new receipt has never been through the pipeline.
+			now, now, nil,
 		).
 		ExecContext(ctx)
 	if err != nil {
@@ -342,6 +343,25 @@ func (r *ReceiptRepo) Update(ctx context.Context, rcpt *domain.Receipt) error {
 	return nil
 }
 
+// MarkMatchAttempted stamps when the matching pipeline last ran for a receipt,
+// so a later sweep can tell that nothing has moved since. Deliberately does not
+// touch updated_at: that column tracks changes to the receipt's own content, and
+// bumping it here would defeat the very comparison this stamp exists for.
+//
+// Pass a nil time to clear the stamp and force the receipt to be reconsidered.
+func (r *ReceiptRepo) MarkMatchAttempted(ctx context.Context, id uuid.UUID, at *time.Time) error {
+	var val any
+	if at != nil {
+		val = at.UTC().Format(time.RFC3339)
+	}
+
+	_, err := r.SQ.Update("receipts").
+		Set("match_attempted_at", val).
+		Where(sq.Eq{"id": id.String()}).
+		ExecContext(ctx)
+	return err
+}
+
 func (r *ReceiptRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -522,7 +542,7 @@ func (r *ReceiptRepo) FindSoftDuplicate(ctx context.Context, userID uuid.UUID, m
 func (r *ReceiptRepo) scanReceipt(s scanner) (*domain.Receipt, error) {
 	var rcpt domain.Receipt
 	var idStr, userIDStr string
-	var createdAt, updatedAt ScannableTime
+	var createdAt, updatedAt, matchAttemptedAt ScannableTime
 	var dateVal ScannableTime
 	var lineItemsStr sql.NullString
 	var duplicateOfStr sql.NullString
@@ -535,7 +555,7 @@ func (r *ReceiptRepo) scanReceipt(s scanner) (*domain.Receipt, error) {
 		&rcpt.Source, &rcpt.Status,
 		&rcpt.ContentHash, &rcpt.GmailMessageID, &rcpt.OrderID, &rcpt.MerchantKey, &duplicateOfStr,
 		&rcpt.IsSubscription,
-		&createdAt, &updatedAt,
+		&createdAt, &updatedAt, &matchAttemptedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -550,6 +570,7 @@ func (r *ReceiptRepo) scanReceipt(s scanner) (*domain.Receipt, error) {
 	if updatedAt.Val != nil {
 		rcpt.UpdatedAt = *updatedAt.Val
 	}
+	rcpt.MatchAttemptedAt = matchAttemptedAt.Val
 	if lineItemsStr.Valid && lineItemsStr.String != "" {
 		rcpt.LineItems = json.RawMessage(lineItemsStr.String)
 	} else {
@@ -566,7 +587,7 @@ func (r *ReceiptRepo) scanReceipt(s scanner) (*domain.Receipt, error) {
 func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch, error) {
 	var rwm domain.ReceiptWithMatch
 	var idStr, userIDStr string
-	var createdAt, updatedAt ScannableTime
+	var createdAt, updatedAt, matchAttemptedAt ScannableTime
 	var dateVal ScannableTime
 	var lineItemsStr sql.NullString
 	var duplicateOfStr sql.NullString
@@ -585,7 +606,7 @@ func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch,
 		&rwm.Source, &rwm.Status,
 		&rwm.ContentHash, &rwm.GmailMessageID, &rwm.OrderID, &rwm.MerchantKey, &duplicateOfStr,
 		&rwm.IsSubscription,
-		&createdAt, &updatedAt,
+		&createdAt, &updatedAt, &matchAttemptedAt,
 		&matchID, &matchReceiptID, &matchTxnID, &matchAccountID,
 		&matchConfidence, &matchMethod, &matchReason, &matchedAt,
 	)
@@ -602,6 +623,7 @@ func (r *ReceiptRepo) scanReceiptWithMatch(s scanner) (*domain.ReceiptWithMatch,
 	if updatedAt.Val != nil {
 		rwm.UpdatedAt = *updatedAt.Val
 	}
+	rwm.MatchAttemptedAt = matchAttemptedAt.Val
 	if lineItemsStr.Valid && lineItemsStr.String != "" {
 		rwm.LineItems = json.RawMessage(lineItemsStr.String)
 	} else {
