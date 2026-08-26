@@ -1,5 +1,4 @@
--- Two columns supporting LLM-vetted merchant matching (SQLite mirror of
--- plaid-wrapper's 000067).
+-- Two columns supporting LLM-vetted merchant matching.
 --
 -- llm_confidence records how sure the model was, not just which way it answered.
 -- The decision now turns on that number — it separates an automatic link from a
