@@ -870,6 +870,7 @@ func TestGolden_CorrectCategory(t *testing.T) {
 	tests := []struct {
 		name                string
 		goldenName          string
+		merchant            string
 		lineItems           []domain.LineItem
 		currentPrimary      string
 		currentDetailed     string
@@ -879,21 +880,77 @@ func TestGolden_CorrectCategory(t *testing.T) {
 		{
 			name:       "coffee_miscategorized_as_merchandise",
 			goldenName: "correct_category",
+			merchant:   "Blue Bottle Coffee",
 			lineItems: []domain.LineItem{
 				{Description: "Iced Latte", Quantity: 1, Price: 5.50},
 				{Description: "Blueberry Scone", Quantity: 1, Price: 3.25},
 			},
 			currentPrimary:      "GENERAL_MERCHANDISE",
-			currentDetailed:     "GENERAL_MERCHANDISE_OTHER",
+			currentDetailed:     "GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE",
 			wantShouldCorrect:   true,
 			wantPrimaryContains: "FOOD",
+		},
+
+		// The four below are real production failures from before the merchant
+		// was added to the prompt. Reading line items alone, the old call
+		// answered with what was in the basket instead of what kind of business
+		// was paid. Each asserts the merchant now anchors the answer.
+		{
+			// Was corrected to GENERAL_MERCHANDISE_GIFT_CARD across 10 transactions.
+			name:       "gift_card_bought_at_a_coffee_shop_is_still_coffee",
+			goldenName: "correct_category_starbucks_gift_card",
+			merchant:   "Starbucks",
+			lineItems: []domain.LineItem{
+				{Description: "$25 Gift Card", Quantity: 1, Price: 25.00},
+			},
+			currentPrimary:    "FOOD_AND_DRINK",
+			currentDetailed:   "FOOD_AND_DRINK_COFFEE",
+			wantShouldCorrect: false,
+		},
+		{
+			// Was corrected to FOOD_AND_DRINK_RESTAURANT: a meal charged to the room.
+			name:       "restaurant_charge_at_a_hotel_is_still_lodging",
+			goldenName: "correct_category_marriott_restaurant",
+			merchant:   "Marriott",
+			lineItems: []domain.LineItem{
+				{Description: "Club Sandwich", Quantity: 1, Price: 18.00},
+				{Description: "Iced Tea", Quantity: 2, Price: 4.00},
+			},
+			currentPrimary:    "TRAVEL",
+			currentDetailed:   "TRAVEL_LODGING",
+			wantShouldCorrect: false,
+		},
+		{
+			// Was corrected to FOOD_AND_DRINK_SNACKS.
+			name:       "snacks_bought_at_a_gas_station_are_still_gas",
+			goldenName: "correct_category_bp_snacks",
+			merchant:   "BP",
+			lineItems: []domain.LineItem{
+				{Description: "Doritos", Quantity: 1, Price: 2.49},
+				{Description: "Monster Energy", Quantity: 1, Price: 3.99},
+			},
+			currentPrimary:    "TRANSPORTATION",
+			currentDetailed:   "TRANSPORTATION_GAS",
+			wantShouldCorrect: false,
+		},
+		{
+			// Was corrected to PERSONAL_CARE_HAIR_CARE off a single shampoo order.
+			name:       "one_toiletry_order_does_not_make_amazon_a_salon",
+			goldenName: "correct_category_amazon_shampoo",
+			merchant:   "Amazon",
+			lineItems: []domain.LineItem{
+				{Description: "Head & Shoulders Shampoo 400ml", Quantity: 1, Price: 8.99},
+			},
+			currentPrimary:    "GENERAL_MERCHANDISE",
+			currentDetailed:   "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
+			wantShouldCorrect: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := newGoldenOpenAIService(t, tt.goldenName)
-			result, err := svc.CorrectCategory(context.Background(), tt.lineItems, tt.currentPrimary, tt.currentDetailed)
+			result, err := svc.CorrectCategory(context.Background(), tt.merchant, tt.lineItems, tt.currentPrimary, tt.currentDetailed)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -903,6 +960,21 @@ func TestGolden_CorrectCategory(t *testing.T) {
 			if tt.wantPrimaryContains != "" && !strings.Contains(result.CorrectedPFCPrimary, tt.wantPrimaryContains) {
 				t.Errorf("primary = %q, want to contain %q (detailed: %s)", result.CorrectedPFCPrimary, tt.wantPrimaryContains, result.CorrectedPFCDetailed)
 			}
+			// When the model declines to correct, it must still name the bank's
+			// own primary. A "no correction" verdict paired with some other
+			// category means the answer and the reasoning came apart, which is
+			// harmless here but not in the branch that does correct.
+			if !tt.wantShouldCorrect && result.CorrectedPFCPrimary != tt.currentPrimary {
+				t.Errorf("declined to correct but returned %q, want the bank's own %q (reason: %s)",
+					result.CorrectedPFCPrimary, tt.currentPrimary, result.Reason)
+			}
+			// Whatever the verdict, the category named must be a real one.
+			if !domain.ValidPFC(result.CorrectedPFCPrimary, result.CorrectedPFCDetailed) {
+				t.Errorf("model named a category that does not exist: %s / %s",
+					result.CorrectedPFCPrimary, result.CorrectedPFCDetailed)
+			}
+			t.Logf("verdict: should_correct=%v %s confidence=%.2f reason=%s",
+				result.ShouldCorrect, result.CorrectedPFCDetailed, result.Confidence, result.Reason)
 		})
 	}
 }

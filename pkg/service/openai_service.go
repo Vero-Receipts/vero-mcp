@@ -890,9 +890,15 @@ Respond with a JSON object.`, receiptMerchant, txSide)
 	return &result, nil
 }
 
-// CorrectCategory asks the LLM whether receipt line items suggest a different
-// Plaid PFC category than what was assigned. Uses GTP-5-Nano for cost efficiency.
-func (s *OpenAIService) CorrectCategory(ctx context.Context, lineItems []domain.LineItem, currentPrimary, currentDetailed string) (*domain.CategoryCorrectionResult, error) {
+// CorrectCategory asks the LLM whether a receipt's line items show that Plaid
+// mis-categorized a transaction. Uses gpt-5-nano for cost efficiency.
+//
+// merchant is required context, not decoration. Line items describe what was in
+// the basket, while the category describes what kind of business was paid; given
+// items alone the model reads a hotel restaurant charge as a restaurant and a
+// gift card bought at a coffee shop as a gift shop. The merchant anchors the
+// answer and the items refine it.
+func (s *OpenAIService) CorrectCategory(ctx context.Context, merchant string, lineItems []domain.LineItem, currentPrimary, currentDetailed string) (*domain.CategoryCorrectionResult, error) {
 	if s.apiKey == "" {
 		return nil, fmt.Errorf("OpenAI API key not configured")
 	}
@@ -911,34 +917,66 @@ func (s *OpenAIService) CorrectCategory(ctx context.Context, lineItems []domain.
 		}
 	}
 
-	prompt := fmt.Sprintf(`You are a transaction category classifier. A bank categorized this transaction as "%s" (detailed: "%s").
+	merchantLine := "unknown"
+	if merchant != "" {
+		merchantLine = merchant
+	}
 
-Here are the actual items purchased according to the receipt:
+	prompt := fmt.Sprintf(`You are a transaction category classifier. Decide whether the bank's category for this transaction is wrong.
+
+Merchant: %s
+Bank's category: %s (detailed: %s)
+
+Items on the receipt:
 %s
 
-Plaid PFC primary categories: FOOD_AND_DRINK, TRANSPORTATION, GENERAL_MERCHANDISE, ENTERTAINMENT, MEDICAL, PERSONAL_CARE, GENERAL_SERVICES, GOVERNMENT_AND_NON_PROFIT, HOME_IMPROVEMENT, RENT_AND_UTILITIES, TRAVEL, TRANSFER_IN, TRANSFER_OUT, LOAN_PAYMENTS, BANK_FEES, INCOME.
-
-Based on what was ACTUALLY purchased:
-1. Is the bank's category "%s" correct for these items?
-2. If not, what should the correct primary and detailed categories be?
-
+Valid primary categories, with the sub-types each one covers (choose a PRIMARY):
+%s
 Rules:
-- Only suggest a correction if the items clearly belong to a DIFFERENT category.
-- If the bank category seems reasonable, say should_correct=false.
-- Use the Plaid PFC taxonomy for category names.
-- The detailed category format is PRIMARY_SUBCATEGORY (e.g., FOOD_AND_DRINK_GROCERIES, FOOD_AND_DRINK_RESTAURANT, TRANSPORTATION_GAS).
+- The MERCHANT anchors the category. Start from what kind of business it is.
+- Line items refine within what that merchant plausibly sells; they do not
+  override the merchant. A gift card bought at a coffee shop is still a coffee
+  shop. A meal charged at a hotel is still lodging unless the merchant is the
+  restaurant itself. Snacks bought at a gas station are still a gas station.
+- Only depart from the merchant's evident business when the items clearly show
+  the purchase belongs elsewhere AND that merchant plausibly sells it.
+- Choose only a PRIMARY category. The sub-types are listed to show what each
+  primary covers; do not try to name one.
+- If the bank's category is reasonable for this merchant, set should_correct=false.
+- A wrong correction is much worse than a missed one. When unsure, do not correct.
+- Report confidence honestly: it gates whether the correction is applied at all.
 
-Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(descriptions, "\n"), currentPrimary)
+Respond with a JSON object.`, merchantLine, currentPrimary, currentDetailed, strings.Join(descriptions, "\n"), domain.TaxonomyPrompt())
 
+	// corrected_pfc_primary is an enum, so under strict Structured Outputs an
+	// invented category is not merely discouraged — it cannot be emitted.
+	//
+	// Only the primary is asked for. It is the harder thing to get wrong (16
+	// options, not a hundred-odd) and the one that matters most: it drives the
+	// icon and the spend bucket a user sees. The detailed value is filled from
+	// the primary's catch-all leaf, which costs nothing, because a correction
+	// only lands when the primary was wrong — and then the bank's detailed
+	// category was wrong with it.
 	schema := map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"should_correct":         map[string]interface{}{"type": "boolean", "description": "true if the bank category is wrong"},
-			"corrected_pfc_primary":  map[string]interface{}{"type": "string", "description": "Correct primary category"},
-			"corrected_pfc_detailed": map[string]interface{}{"type": "string", "description": "Correct detailed category"},
-			"reason":                 map[string]interface{}{"type": "string", "description": "Brief explanation"},
+			"should_correct": map[string]interface{}{"type": "boolean", "description": "true if the bank category is wrong for this merchant"},
+			"corrected_pfc_primary": map[string]interface{}{
+				"type":        "string",
+				"enum":        domain.PrimaryEnum(),
+				"description": "The correct primary category. Echo the bank's primary when should_correct is false.",
+			},
+			"confidence": map[string]interface{}{"type": "number", "description": "Confidence 0.0-1.0 that the correction is right"},
+			"reason":     map[string]interface{}{"type": "string", "description": "Reason about the merchant's business and the items BEFORE naming a category"},
 		},
-		"required":             []string{"should_correct", "corrected_pfc_primary", "corrected_pfc_detailed", "reason"},
+		// Field order is load-bearing. Structured Outputs generates properties in
+		// the order "required" lists them, so a category named before "reason"
+		// is chosen with no reasoning yet written down — and with minimal
+		// reasoning effort there is little internal deliberation to fall back on.
+		// Asked that way the model reasoned its way to FOOD_AND_DRINK_COFFEE and
+		// simultaneously emitted GENERAL_MERCHANDISE_SPORTING_GOODS. Reasoning
+		// first makes the category a conclusion instead of a guess.
+		"required":             []string{"reason", "should_correct", "corrected_pfc_primary", "confidence"},
 		"additionalProperties": false,
 	}
 
@@ -955,7 +993,17 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 				"schema": schema,
 			},
 		},
-		"max_completion_tokens": 2048,
+		// Not "minimal", unlike the other nano-tier calls here, and narrowing the
+		// choice to 16 primaries did not change that: at minimal effort this
+		// model reasons its way to one category and emits another (its Marriott
+		// answer read "primarily a hotel" and returned FOOD_AND_DRINK), and
+		// reports 0.55-0.62 confidence even when right, which is below the floor
+		// that decides whether a correction is used at all. This path only fires
+		// on a receipt match, so it is low-volume and can afford to think.
+		// max_completion_tokens covers reasoning plus output, so the budget grows
+		// with the effort.
+		"reasoning_effort":      "medium",
+		"max_completion_tokens": 8192,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -973,6 +1021,7 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Error *struct {
 			Message string `json:"message"`
@@ -987,13 +1036,37 @@ Respond with a JSON object.`, currentPrimary, currentDetailed, strings.Join(desc
 	if len(completion.Choices) == 0 {
 		return nil, fmt.Errorf("no choices in OpenAI response")
 	}
+	content := completion.Choices[0].Message.Content
+	if content == "" {
+		return nil, fmt.Errorf("empty response content (finish_reason=%q)", completion.Choices[0].FinishReason)
+	}
 
-	var result domain.CategoryCorrectionResult
-	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &result); err != nil {
+	var parsed struct {
+		ShouldCorrect       bool    `json:"should_correct"`
+		CorrectedPFCPrimary string  `json:"corrected_pfc_primary"`
+		Confidence          float64 `json:"confidence"`
+		Reason              string  `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		return nil, fmt.Errorf("decode category correction: %w", err)
 	}
-	result.Source = "llm"
-	return &result, nil
+
+	// The schema enum guarantees a real primary, so this cannot fail for a
+	// well-formed response; treat a miss as a malformed one rather than writing a
+	// correction with an empty detailed category.
+	detailed, ok := domain.OtherDetailedFor(parsed.CorrectedPFCPrimary)
+	if !ok {
+		return nil, fmt.Errorf("model returned unknown primary category %q", parsed.CorrectedPFCPrimary)
+	}
+
+	return &domain.CategoryCorrectionResult{
+		ShouldCorrect:        parsed.ShouldCorrect,
+		CorrectedPFCPrimary:  parsed.CorrectedPFCPrimary,
+		CorrectedPFCDetailed: detailed,
+		Confidence:           parsed.Confidence,
+		Reason:               parsed.Reason,
+		Source:               "llm",
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

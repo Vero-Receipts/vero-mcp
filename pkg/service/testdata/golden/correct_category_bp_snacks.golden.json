@@ -1,0 +1,38 @@
+{
+  "request_sha256": "effe6dee0039a298b909ddd7994d23f648412d5790df38d197dcb032f62696e1",
+  "response": {
+    "id": "chatcmpl-EHB54JL2tglQnvnSJCI47tKp4cYa6",
+    "object": "chat.completion",
+    "created": 1787762878,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"confidence\":0.6,\"corrected_pfc_primary\":\"TRANSPORTATION\",\"reason\":\"BP is a gas station, so the merchant anchors the transaction under TRANSPORTATION_GAS. Line items (Doritos and Monster Energy) are snacks bought at a gas station and do not override the merchant's primary classification. Therefore the bank's TRANSPORTATION category is reasonable for this transaction and no correction is needed.\",\"should_correct\":false}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1555,
+      "completion_tokens": 1702,
+      "total_tokens": 3257,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1600,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

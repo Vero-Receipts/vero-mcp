@@ -27,4 +27,7 @@ type CategoryCorrectionResult struct {
 	CorrectedPFCDetailed string `json:"corrected_pfc_detailed"`
 	Source               string `json:"source"` // "rule", "llm", "cache"
 	Reason               string `json:"reason"`
+	// Confidence is the model's own 0.0-1.0 certainty. Only the "llm" source
+	// sets it; rule and cache results are deterministic and skip the threshold.
+	Confidence float64 `json:"confidence"`
 }

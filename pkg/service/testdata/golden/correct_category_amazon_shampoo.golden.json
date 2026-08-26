@@ -1,0 +1,38 @@
+{
+  "request_sha256": "82e47b2fc8771a53ae6fdec5399cc121332a6166f6abd8b465561199b7756785",
+  "response": {
+    "id": "chatcmpl-EHB5JZWFBTcl2YMLBfSA1FGaRV44b",
+    "object": "chat.completion",
+    "created": 1787762893,
+    "model": "gpt-5-nano-2025-08-07",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"confidence\":0.8,\"corrected_pfc_primary\":\"GENERAL_MERCHANDISE\",\"reason\":\"Amazon is an online general merchandise marketplace. A shampoo purchase is a consumer product sold by a general merchandise retailer, not specifically a personal care specialty merchant. The merchant's business classification as general merchandise (online marketplace) justifies the bank's GENERAL_MERCHANDISE category; the line item does not override the merchant's primary category.\",\"should_correct\":false}",
+          "refusal": null,
+          "annotations": []
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1568,
+      "completion_tokens": 812,
+      "total_tokens": 2380,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "audio_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 704,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0
+      }
+    },
+    "service_tier": "default",
+    "system_fingerprint": null
+  }
+}

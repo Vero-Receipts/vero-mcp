@@ -884,8 +884,8 @@ func transactionRowToResponse(row domain.TransactionWithReceipt) domain.Transact
 		Pending:              row.Pending,
 		Recurring:            row.Recurring,
 		MerchantLogo:         mLogo,
-		CorrectedPFCPrimary:  row.CorrectedPFCPrimary,
-		CorrectedPFCDetailed: row.CorrectedPFCDetailed,
+		PlaidPFCPrimary:      row.PlaidPFCPrimary,
+		PlaidPFCDetailed:     row.PlaidPFCDetailed,
 		Receipt:              row.Receipt,
 		SuggestedReceipt:     row.Suggested,
 	}
