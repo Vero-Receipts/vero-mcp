@@ -89,6 +89,18 @@ type TransactionCacheRepository interface {
 	SetRecurring(ctx context.Context, transactionIDs []string) error
 }
 
+// TransactionReportRepository answers aggregate questions about spending.
+// Separate from TransactionCacheRepository because nothing here reads or writes
+// individual transactions — these are GROUP BY queries that exist so a client
+// does not have to download a history to add it up.
+type TransactionReportRepository interface {
+	SpendingTotals(ctx context.Context, filter domain.ReportFilter) (domain.SpendingTotals, error)
+	SpendingByPrimary(ctx context.Context, filter domain.ReportFilter) ([]domain.CategoryAmount, error)
+	SpendingByDetailed(ctx context.Context, filter domain.ReportFilter) ([]domain.CategoryAmount, error)
+	SpendingByMonth(ctx context.Context, filter domain.ReportFilter) ([]domain.MonthCategoryAmount, error)
+	SpendingByMerchant(ctx context.Context, filter domain.ReportFilter, limit int) ([]domain.MerchantAmount, error)
+}
+
 type MerchantAliasRepository interface {
 	FindCanonical(ctx context.Context, alias string) (string, error)
 	AreSameMerchant(ctx context.Context, a, b string) (bool, error)
