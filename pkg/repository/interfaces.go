@@ -100,6 +100,14 @@ type TransactionReportRepository interface {
 	SpendingByBucket(ctx context.Context, filter domain.ReportFilter) ([]domain.BucketCategoryAmount, error)
 	SpendingByMerchant(ctx context.Context, filter domain.ReportFilter, limit int) ([]domain.MerchantAmount, error)
 	IncomeBySource(ctx context.Context, filter domain.ReportFilter, limit int) ([]domain.IncomeSource, error)
+	TaxLineTotals(ctx context.Context, filter domain.ReportFilter) ([]domain.TaxLineTotal, error)
+}
+
+// ExpenseExportRepository streams a user's expenses at spreadsheet grain: one
+// row per receipt line item. Separate from the aggregate repository because it
+// returns rows rather than sums, and streams rather than collecting.
+type ExpenseExportRepository interface {
+	ExpenseRows(ctx context.Context, filter domain.ReportFilter) (*ExpenseRowCursor, error)
 }
 
 type MerchantAliasRepository interface {

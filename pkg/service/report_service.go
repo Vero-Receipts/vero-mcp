@@ -281,3 +281,52 @@ func share(amount, total float64) float64 {
 	}
 	return amount / total * 100
 }
+
+// TaxLineDTO is one transaction-derived line of an estimate.
+//
+// Totals only. The rows behind a line are fetched from the transaction list
+// when something needs to itemize them, so a year of restaurant meals does not
+// arrive as thousands of rows nobody asked to see.
+type TaxLineDTO struct {
+	Key    string  `json:"key"`
+	Amount float64 `json:"amount"`
+	Count  int     `json:"count"`
+	// Primary and DetailContains are the filter that selected this line, handed
+	// back so a client can ask the transaction list for the same rows without
+	// keeping its own copy of the definition.
+	Primary        string   `json:"primary"`
+	DetailContains []string `json:"detail_contains,omitempty"`
+}
+
+type TaxReport struct {
+	Year  int          `json:"year"`
+	Lines []TaxLineDTO `json:"lines"`
+}
+
+// TaxReport totals the transaction-derived lines of an estimate for one
+// calendar year.
+func (s *ReportService) TaxReport(ctx context.Context, userID uuid.UUID, year int) (*TaxReport, error) {
+	if year <= 0 {
+		year = time.Now().UTC().Year()
+	}
+
+	totals, err := s.repo.TaxLineTotals(ctx, domain.ReportFilter{
+		UserID: userID,
+		From:   fmt.Sprintf("%d-01-01", year),
+		To:     fmt.Sprintf("%d-12-31", year),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tax line totals: %w", err)
+	}
+
+	report := &TaxReport{Year: year, Lines: make([]TaxLineDTO, 0, len(totals))}
+	for _, total := range totals {
+		line := TaxLineDTO{Key: total.Key, Amount: total.Amount, Count: total.Count}
+		if def, ok := domain.TaxLineFor(total.Key); ok {
+			line.Primary = def.Primary
+			line.DetailContains = def.DetailContains
+		}
+		report.Lines = append(report.Lines, line)
+	}
+	return report, nil
+}

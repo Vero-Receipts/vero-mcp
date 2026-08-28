@@ -368,3 +368,47 @@ func (r *TransactionReportRepo) SpendingByMerchant(ctx context.Context, f domain
 	}
 	return out, rows.Err()
 }
+
+// TaxLineTotals sums the transactions behind each line of a tax estimate, over
+// the filter's window.
+//
+// One query per line rather than one grouped query: the lines are not a
+// partition — client meals and cell phone can both draw on rows a third line
+// also counts — so a GROUP BY would have to assign each row to exactly one
+// bucket, which is the wrong shape for the question.
+func (r *TransactionReportRepo) TaxLineTotals(ctx context.Context, f domain.ReportFilter) ([]domain.TaxLineTotal, error) {
+	out := make([]domain.TaxLineTotal, 0, len(domain.TaxLineDefinitions))
+
+	for _, line := range domain.TaxLineDefinitions {
+		scoped := f
+		scoped.PFCPrimary = line.Primary
+
+		qb := r.applyScope(
+			r.SQ.Select(spentExpr, "COUNT(*)").From("transaction_cache t"),
+			scoped,
+		)
+		if needles := line.LowerDetailContains(); len(needles) > 0 {
+			// COALESCE first: pfc_detailed is nullable, and LIKE against NULL
+			// is NULL, so an unnarrowed row would drop out silently.
+			//
+			// LOWER on both sides because the dialects disagree about LIKE —
+			// Postgres is case-sensitive, SQLite is not — and a query that
+			// passes in tests while missing rows in production is the worst of
+			// the two behaviours.
+			any := sq.Or{}
+			for _, needle := range needles {
+				any = append(any, sq.Expr(
+					"LOWER(COALESCE(t.pfc_detailed, '')) LIKE ?", "%"+needle+"%"))
+			}
+			qb = qb.Where(any)
+		}
+
+		var total domain.TaxLineTotal
+		total.Key = line.Key
+		if err := qb.RunWith(r.DB).QueryRowContext(ctx).Scan(&total.Amount, &total.Count); err != nil {
+			return nil, fmt.Errorf("tax line %s: %w", line.Key, err)
+		}
+		out = append(out, total)
+	}
+	return out, nil
+}

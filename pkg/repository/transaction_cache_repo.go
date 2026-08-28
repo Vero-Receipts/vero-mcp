@@ -924,6 +924,19 @@ func applyTransactionFiltersSQ(qb sq.SelectBuilder, f domain.TransactionFilter) 
 	if len(f.PFCDetailedNotIn) > 0 {
 		qb = qb.Where(sq.NotEq{"COALESCE(t.pfc_detailed, '')": f.PFCDetailedNotIn})
 	}
+	// Sub-categories whose name contains any of these — how a tax line names
+	// the transactions behind it ("donations" within the non-profit category).
+	// LOWER on both sides because Postgres LIKE is case-sensitive and SQLite's
+	// is not; COALESCE because the column is nullable and LIKE against NULL is
+	// NULL, which would drop rows rather than skip them.
+	if len(f.PFCDetailedContains) > 0 {
+		any := sq.Or{}
+		for _, needle := range f.PFCDetailedContains {
+			any = append(any, sq.Expr(
+				"LOWER(COALESCE(t.pfc_detailed, '')) LIKE LOWER(?)", "%"+needle+"%"))
+		}
+		qb = qb.Where(any)
+	}
 	if strings.EqualFold(f.Pending, "true") {
 		qb = qb.Where(sq.Eq{"t.pending": true})
 	} else if strings.EqualFold(f.Pending, "false") {

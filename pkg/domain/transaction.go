@@ -142,12 +142,16 @@ type TransactionFilter struct {
 	// excluded from nothing, so it survives both.
 	PFCPrimaryNotIn  []string
 	PFCDetailedNotIn []string
-	Matched          string // "matched", "unmatched", or "" for all
-	Pending          string // "true", "false", or "" for all
-	SortBy           string // "date", "amount", "merchant", "name" (default: "date")
-	SortOrder        string // "asc" or "desc" (default: "desc")
-	Limit            int    // page size; when > 0 the query is paginated
-	Offset           int    // page offset; ignored unless Limit > 0
+	// PFCDetailedContains matches sub-categories by substring, which is how a
+	// tax line selects its rows — "donations" within the non-profit category.
+	// Any one match is enough.
+	PFCDetailedContains []string
+	Matched             string // "matched", "unmatched", or "" for all
+	Pending             string // "true", "false", or "" for all
+	SortBy              string // "date", "amount", "merchant", "name" (default: "date")
+	SortOrder           string // "asc" or "desc" (default: "desc")
+	Limit               int    // page size; when > 0 the query is paginated
+	Offset              int    // page offset; ignored unless Limit > 0
 }
 
 // TransactionResponse is what the API returns to clients (camelCase).

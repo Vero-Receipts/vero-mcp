@@ -108,3 +108,44 @@ type MerchantAmount struct {
 	Amount     float64
 	Count      int
 }
+
+// ExpenseRow is one line of an expense export: a receipt line item, or a whole
+// purchase when nothing itemized it.
+//
+// The transaction-level money columns repeat across every item of one purchase,
+// so a writer emits them on the first row only — otherwise summing the amount
+// column in a spreadsheet counts an itemized purchase once per item.
+type ExpenseRow struct {
+	Date           string
+	Merchant       string
+	Category       string
+	Subcategory    string
+	Pending        bool
+	Recurring      bool
+	Amount         float64
+	PaymentChannel string
+	TransactionID  string
+	// MatchMethod says how the receipt came to be attached — automatically, by
+	// hand, or inherited from an earlier charge of the same subscription.
+	MatchMethod string
+
+	ReceiptSubtotal float64
+	ReceiptTax      float64
+	ReceiptTip      float64
+	ReceiptTotal    float64
+	ReceiptSource   string
+	PaymentMethod   string
+	MerchantAddress string
+	MerchantCity    string
+	MerchantState   string
+	PurchaseTime    string
+	OrderNumber     string
+
+	// HasItem distinguishes a purchase with one line item from one with none.
+	HasItem         bool
+	LineNumber      int
+	ItemDescription string
+	Quantity        float64
+	UnitPrice       float64
+	LineTotal       float64
+}

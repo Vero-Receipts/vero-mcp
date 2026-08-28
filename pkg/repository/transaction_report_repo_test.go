@@ -608,3 +608,93 @@ func TestExcludeCategoriesKeepsUncategorizedRows(t *testing.T) {
 		t.Errorf("row = %q, want UNCATEGORIZED", rows[0].Name)
 	}
 }
+
+// Tax lines are not a partition: one transaction can count toward more than one
+// line, and a line narrowed by sub-category must not sweep in its whole
+// category.
+func TestTaxLineTotals(t *testing.T) {
+	db, repo, filter := reportFixture(t)
+	filter.From, filter.To = "2026-01-01", "2026-12-31"
+
+	// Charitable: the non-profit category, narrowed to donations.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 100, date: "2026-03-04",
+		primary: "GOVERNMENT_AND_NON_PROFIT", detailed: "GOVERNMENT_AND_NON_PROFIT_DONATIONS"})
+	// Same category, not a donation — a parking fine is not deductible giving.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 75, date: "2026-03-05",
+		primary: "GOVERNMENT_AND_NON_PROFIT", detailed: "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT"})
+	// Utilities split across two differently-narrowed lines.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 60, date: "2026-03-06",
+		primary: "RENT_AND_UTILITIES", detailed: "RENT_AND_UTILITIES_TELEPHONE"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 90, date: "2026-03-07",
+		primary: "RENT_AND_UTILITIES", detailed: "RENT_AND_UTILITIES_INTERNET_AND_CABLE"})
+	// A whole-category line takes every sub-category, narrowed or not.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 40, date: "2026-03-08", primary: "MEDICAL"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 10, date: "2026-03-09",
+		primary: "MEDICAL", detailed: "MEDICAL_DENTAL_CARE"})
+	// Outside the year, so outside every line.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 999, date: "2025-12-31", primary: "MEDICAL"})
+
+	totals, err := repo.TaxLineTotals(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("TaxLineTotals: %v", err)
+	}
+
+	got := map[string]float64{}
+	counts := map[string]int{}
+	for _, line := range totals {
+		got[line.Key] = line.Amount
+		counts[line.Key] = line.Count
+	}
+
+	want := map[string]float64{
+		"charitable_donations":   100,
+		"large_medical_expenses": 50,
+		"client_meals":           0,
+		"cell_phone":             60,
+		"home_internet":          90,
+		"rental_repairs":         0,
+	}
+	for key, amount := range want {
+		if got[key] != amount {
+			t.Errorf("line %s = %v, want %v", key, got[key], amount)
+		}
+	}
+	if counts["large_medical_expenses"] != 2 {
+		t.Errorf("medical count = %d, want 2", counts["large_medical_expenses"])
+	}
+	// Every line is reported, including the ones that came to nothing — the
+	// estimate lists them all and shows a zero.
+	if len(totals) != len(domain.TaxLineDefinitions) {
+		t.Errorf("got %d lines, want %d", len(totals), len(domain.TaxLineDefinitions))
+	}
+}
+
+// A tax line's rows have to be selectable from the transaction list, or the
+// itemized export cannot reproduce the total the estimate showed.
+func TestDetailContainsMatchesTheSameRows(t *testing.T) {
+	db, _, filter := reportFixture(t)
+	listRepo := NewTransactionCacheRepo(db, DialectSQLite)
+
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 100, date: "2026-03-04",
+		primary: "GOVERNMENT_AND_NON_PROFIT", detailed: "GOVERNMENT_AND_NON_PROFIT_DONATIONS"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 75, date: "2026-03-05",
+		primary: "GOVERNMENT_AND_NON_PROFIT", detailed: "GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT"})
+
+	rows, _, spent, err := listRepo.FindByUserIDWithReceipts(
+		context.Background(),
+		filter.UserID,
+		domain.TransactionFilter{
+			PFCPrimary:          "GOVERNMENT_AND_NON_PROFIT",
+			PFCDetailedContains: []string{"DONATION", "CHARIT"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("FindByUserIDWithReceipts: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	if spent != 100 {
+		t.Errorf("total_spent = %v, want 100 — the list and the tax line disagree", spent)
+	}
+}
