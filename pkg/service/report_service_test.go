@@ -74,21 +74,21 @@ func TestPercentagesSurviveAnEmptyWindow(t *testing.T) {
 	}
 }
 
-func TestMonthPivotGroupsCategoriesUnderTheirMonth(t *testing.T) {
-	rows := []domain.MonthCategoryAmount{
-		{Month: "2026-06", Primary: "FOOD_AND_DRINK", Amount: 100},
-		{Month: "2026-06", Primary: "TRAVEL", Amount: 50},
-		{Month: "2026-07", Primary: "FOOD_AND_DRINK", Amount: 25},
+func TestBucketPivotGroupsCategoriesUnderTheirBucket(t *testing.T) {
+	rows := []domain.BucketCategoryAmount{
+		{Bucket: "2026-06", Primary: "FOOD_AND_DRINK", Amount: 100},
+		{Bucket: "2026-06", Primary: "TRAVEL", Amount: 50},
+		{Bucket: "2026-07", Primary: "FOOD_AND_DRINK", Amount: 25},
 	}
 
-	got := monthDTOs(rows)
+	got := bucketDTOs(rows)
 
 	if len(got) != 2 {
 		t.Fatalf("got %d months, want 2", len(got))
 	}
 	// Oldest first, as the query returns them — the charts draw left to right.
-	if got[0].Month != "2026-06" || got[1].Month != "2026-07" {
-		t.Errorf("months = %q, %q; want 2026-06, 2026-07", got[0].Month, got[1].Month)
+	if got[0].Bucket != "2026-06" || got[1].Bucket != "2026-07" {
+		t.Errorf("months = %q, %q; want 2026-06, 2026-07", got[0].Bucket, got[1].Bucket)
 	}
 	if got[0].Total != 150 {
 		t.Errorf("June total = %v, want 150", got[0].Total)
@@ -110,7 +110,7 @@ func TestEmptyReportSlicesSerializeAsArrays(t *testing.T) {
 	if subcategoryDTOs(nil, nil) == nil {
 		t.Error("by_subcategory is nil, want an empty slice")
 	}
-	if monthDTOs(nil) == nil {
+	if bucketDTOs(nil) == nil {
 		t.Error("by_month is nil, want an empty slice")
 	}
 	if merchantDTOs(nil) == nil {

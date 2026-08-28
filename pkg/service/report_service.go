@@ -56,11 +56,19 @@ type SubcategoryDTO struct {
 	Pct     float64 `json:"pct"`
 }
 
-type MonthDTO struct {
-	Month string  `json:"month"`
-	Total float64 `json:"total"`
+type BucketDTO struct {
+	// Bucket is the date the bucket starts on: YYYY-MM-DD for days and weeks,
+	// YYYY-MM for months.
+	Bucket string  `json:"bucket"`
+	Total  float64 `json:"total"`
 	// ByCategory holds the category breakdown behind Total, keyed by primary.
 	ByCategory map[string]float64 `json:"by_category"`
+}
+
+type IncomeSourceDTO struct {
+	Name   string  `json:"name"`
+	Amount float64 `json:"amount"`
+	Count  int     `json:"count"`
 }
 
 type MerchantDTO struct {
@@ -72,18 +80,30 @@ type MerchantDTO struct {
 }
 
 type SpendingReport struct {
-	Window        SpendingWindow    `json:"window"`
+	Window SpendingWindow `json:"window"`
+	// Granularity is the width of each ByBucket entry, echoed so a client never
+	// has to infer it from the key format.
+	Granularity   string            `json:"granularity"`
 	Totals        SpendingTotalsDTO `json:"totals"`
 	ByCategory    []CategoryDTO     `json:"by_category"`
 	BySubcategory []SubcategoryDTO  `json:"by_subcategory"`
-	ByMonth       []MonthDTO        `json:"by_month"`
+	ByBucket      []BucketDTO       `json:"by_bucket"`
 	ByMerchant    []MerchantDTO     `json:"by_merchant"`
+	// IncomeTotal and ByIncomeSource cover money arriving over the window —
+	// what the money-flow chart draws opposite spending. Only the INCOME
+	// category counts; a refund is a credit but not earnings.
+	IncomeTotal    float64           `json:"income_total"`
+	ByIncomeSource []IncomeSourceDTO `json:"by_income_source"`
 }
 
 // merchantLimit caps the merchant breakdown. The clients render a handful;
 // returning every merchant an account has ever used would dwarf the rest of the
 // response for no one's benefit.
 const merchantLimit = 50
+
+// incomeSourceLimit caps the payers listed. The money-flow chart draws a
+// handful of inflows and folds the rest.
+const incomeSourceLimit = 25
 
 // SpendingReportParams is what a caller asks for. Months is a convenience:
 // "the last N calendar months, including this one".
@@ -92,6 +112,10 @@ type SpendingReportParams struct {
 	From   string
 	To     string
 	Months int
+	// PFCPrimary narrows the whole report to one category, for a drill-down.
+	PFCPrimary string
+	// Granularity is the width of each over-time bucket; empty means months.
+	Granularity string
 }
 
 // WindowFrom resolves the effective start of the window.
@@ -114,9 +138,11 @@ func (p SpendingReportParams) WindowFrom(now time.Time) string {
 // SpendingReport builds the whole report for one user and window.
 func (s *ReportService) SpendingReport(ctx context.Context, params SpendingReportParams) (*SpendingReport, error) {
 	filter := domain.ReportFilter{
-		UserID: params.UserID,
-		From:   params.WindowFrom(time.Now().UTC()),
-		To:     params.To,
+		UserID:      params.UserID,
+		From:        params.WindowFrom(time.Now().UTC()),
+		To:          params.To,
+		PFCPrimary:  params.PFCPrimary,
+		Granularity: domain.ParseGranularity(params.Granularity),
 	}
 
 	totals, err := s.repo.SpendingTotals(ctx, filter)
@@ -131,13 +157,17 @@ func (s *ReportService) SpendingReport(ctx context.Context, params SpendingRepor
 	if err != nil {
 		return nil, fmt.Errorf("spending by subcategory: %w", err)
 	}
-	byMonth, err := s.repo.SpendingByMonth(ctx, filter)
+	byBucket, err := s.repo.SpendingByBucket(ctx, filter)
 	if err != nil {
-		return nil, fmt.Errorf("spending by month: %w", err)
+		return nil, fmt.Errorf("spending by bucket: %w", err)
 	}
 	byMerchant, err := s.repo.SpendingByMerchant(ctx, filter, merchantLimit)
 	if err != nil {
 		return nil, fmt.Errorf("spending by merchant: %w", err)
+	}
+	income, err := s.repo.IncomeBySource(ctx, filter, incomeSourceLimit)
+	if err != nil {
+		return nil, fmt.Errorf("income by source: %w", err)
 	}
 
 	report := &SpendingReport{
@@ -147,10 +177,15 @@ func (s *ReportService) SpendingReport(ctx context.Context, params SpendingRepor
 			TransactionCount: totals.TransactionCount,
 			MonthsActive:     totals.MonthsActive,
 		},
-		ByCategory:    categoryDTOs(byPrimary, totals.Spent),
-		BySubcategory: subcategoryDTOs(byDetailed, byPrimary),
-		ByMonth:       monthDTOs(byMonth),
-		ByMerchant:    merchantDTOs(byMerchant),
+		ByCategory:     categoryDTOs(byPrimary, totals.Spent),
+		BySubcategory:  subcategoryDTOs(byDetailed, byPrimary),
+		ByBucket:       bucketDTOs(byBucket),
+		ByMerchant:     merchantDTOs(byMerchant),
+		ByIncomeSource: incomeDTOs(income),
+	}
+	report.Granularity = string(filter.Granularity)
+	for _, source := range income {
+		report.IncomeTotal += source.Amount
 	}
 	return report, nil
 }
@@ -189,21 +224,33 @@ func subcategoryDTOs(rows []domain.CategoryAmount, primaries []domain.CategoryAm
 	return out
 }
 
-// monthDTOs pivots the flat (month, category) rows into one entry per month,
+// bucketDTOs pivots the flat (bucket, category) rows into one entry per bucket,
 // preserving the oldest-first order the query returns.
-func monthDTOs(rows []domain.MonthCategoryAmount) []MonthDTO {
-	out := make([]MonthDTO, 0)
+func bucketDTOs(rows []domain.BucketCategoryAmount) []BucketDTO {
+	out := make([]BucketDTO, 0)
 	index := make(map[string]int)
 
 	for _, row := range rows {
-		position, seen := index[row.Month]
+		position, seen := index[row.Bucket]
 		if !seen {
 			position = len(out)
-			index[row.Month] = position
-			out = append(out, MonthDTO{Month: row.Month, ByCategory: map[string]float64{}})
+			index[row.Bucket] = position
+			out = append(out, BucketDTO{Bucket: row.Bucket, ByCategory: map[string]float64{}})
 		}
 		out[position].Total += row.Amount
 		out[position].ByCategory[row.Primary] += row.Amount
+	}
+	return out
+}
+
+func incomeDTOs(rows []domain.IncomeSource) []IncomeSourceDTO {
+	out := make([]IncomeSourceDTO, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, IncomeSourceDTO{
+			Name:   row.Name,
+			Amount: row.Amount,
+			Count:  row.Count,
+		})
 	}
 	return out
 }

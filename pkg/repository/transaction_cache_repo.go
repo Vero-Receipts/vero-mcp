@@ -911,6 +911,19 @@ func applyTransactionFiltersSQ(qb sq.SelectBuilder, f domain.TransactionFilter) 
 	if f.PFCDetailed != "" {
 		qb = qb.Where(sq.Eq{"t.pfc_detailed": f.PFCDetailed})
 	}
+	// Everything-except filters, for the "Other" branch of a chart: the rows
+	// left over once the categories drawn individually are taken out.
+	//
+	// COALESCE is load-bearing, not tidiness. An uncategorized row has NULL
+	// here, and `NULL NOT IN ('FOOD_AND_DRINK')` is NULL rather than true — so
+	// a bare NOT IN would silently drop exactly the rows an "Other" bucket
+	// exists to show.
+	if len(f.PFCPrimaryNotIn) > 0 {
+		qb = qb.Where(sq.NotEq{"COALESCE(t.pfc_primary, '')": f.PFCPrimaryNotIn})
+	}
+	if len(f.PFCDetailedNotIn) > 0 {
+		qb = qb.Where(sq.NotEq{"COALESCE(t.pfc_detailed, '')": f.PFCDetailedNotIn})
+	}
 	if strings.EqualFold(f.Pending, "true") {
 		qb = qb.Where(sq.Eq{"t.pending": true})
 	} else if strings.EqualFold(f.Pending, "false") {

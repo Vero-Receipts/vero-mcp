@@ -241,25 +241,25 @@ func TestSpendingByDetailedBucketsMissingValues(t *testing.T) {
 // Month keys are UTC calendar months. The clients used to bucket in local time,
 // which pushed a first-of-month transaction into the previous month west of
 // Greenwich; boundaries are where that shows up.
-func TestSpendingByMonthBucketsOnCalendarBoundaries(t *testing.T) {
+func TestSpendingByBucketBucketsOnCalendarBoundaries(t *testing.T) {
 	db, repo, filter := reportFixture(t)
 
 	seedTxn(t, db, filter.UserID, txnSeed{amount: 10, date: "2026-01-31", primary: "TRAVEL"})
 	seedTxn(t, db, filter.UserID, txnSeed{amount: 20, date: "2026-02-01", primary: "TRAVEL"})
 	seedTxn(t, db, filter.UserID, txnSeed{amount: 5, date: "2026-02-28", primary: "FOOD_AND_DRINK"})
 
-	byMonth, err := repo.SpendingByMonth(context.Background(), filter)
+	byBucket, err := repo.SpendingByBucket(context.Background(), filter)
 	if err != nil {
-		t.Fatalf("SpendingByMonth: %v", err)
+		t.Fatalf("SpendingByBucket: %v", err)
 	}
-	if len(byMonth) != 3 {
-		t.Fatalf("got %d rows, want 3: %+v", len(byMonth), byMonth)
+	if len(byBucket) != 3 {
+		t.Fatalf("got %d rows, want 3: %+v", len(byBucket), byBucket)
 	}
-	if byMonth[0].Month != "2026-01" || byMonth[0].Amount != 10 {
-		t.Errorf("first row = %+v, want 2026-01/10", byMonth[0])
+	if byBucket[0].Bucket != "2026-01" || byBucket[0].Amount != 10 {
+		t.Errorf("first row = %+v, want 2026-01/10", byBucket[0])
 	}
-	for _, row := range byMonth[1:] {
-		if row.Month != "2026-02" {
+	for _, row := range byBucket[1:] {
+		if row.Bucket != "2026-02" {
 			t.Errorf("row %+v should be in 2026-02", row)
 		}
 	}
@@ -408,12 +408,12 @@ func TestGroupingsReconcileWithTotals(t *testing.T) {
 		sums["detailed"] += row.Amount
 	}
 
-	byMonth, err := repo.SpendingByMonth(ctx, filter)
+	byBucket, err := repo.SpendingByBucket(ctx, filter)
 	if err != nil {
-		t.Fatalf("SpendingByMonth: %v", err)
+		t.Fatalf("SpendingByBucket: %v", err)
 	}
-	for _, row := range byMonth {
-		sums["month"] += row.Amount
+	for _, row := range byBucket {
+		sums["bucket"] += row.Amount
 	}
 
 	byMerchant, err := repo.SpendingByMerchant(ctx, filter, 0)
@@ -428,5 +428,183 @@ func TestGroupingsReconcileWithTotals(t *testing.T) {
 		if sum != want {
 			t.Errorf("%s grouping sums to %v, want %v", grouping, sum, want)
 		}
+	}
+}
+
+// Money arriving is the INCOME category and nothing else. A refund is also a
+// credit, but drawing a returned purchase as earnings from the shop that took
+// it back would be worse than leaving it out.
+func TestIncomeCountsEarningsNotRefunds(t *testing.T) {
+	db, repo, filter := reportFixture(t)
+
+	seedTxn(t, db, filter.UserID, txnSeed{amount: -2500, date: "2026-03-01", name: "ACME PAYROLL", primary: "INCOME"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: -500, date: "2026-03-15", name: "ACME PAYROLL", primary: "INCOME"})
+	// A returned television: a credit, in a spending category.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: -400, date: "2026-03-20", name: "BEST BUY", primary: "GENERAL_MERCHANDISE"})
+	// Moving money between the user's own accounts is not earnings either.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: -1000, date: "2026-03-21", name: "TRANSFER", primary: "TRANSFER_IN"})
+	// And an ordinary expense must not appear on the income side at all.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 60, date: "2026-03-22", primary: "FOOD_AND_DRINK"})
+
+	income, err := repo.IncomeBySource(context.Background(), filter, 0)
+	if err != nil {
+		t.Fatalf("IncomeBySource: %v", err)
+	}
+	if len(income) != 1 {
+		t.Fatalf("got %d income sources, want 1: %+v", len(income), income)
+	}
+	if income[0].Name != "ACME PAYROLL" {
+		t.Errorf("source = %q, want ACME PAYROLL", income[0].Name)
+	}
+	// Reported as a positive magnitude, not Plaid's negative.
+	if income[0].Amount != 3000 {
+		t.Errorf("amount = %v, want 3000", income[0].Amount)
+	}
+	if income[0].Count != 2 {
+		t.Errorf("count = %d, want 2", income[0].Count)
+	}
+}
+
+// Income and spending are asked about the same window, so a report can show
+// both without one of them quietly covering a different period.
+func TestIncomeRespectsTheWindow(t *testing.T) {
+	db, repo, filter := reportFixture(t)
+
+	seedTxn(t, db, filter.UserID, txnSeed{amount: -100, date: "2026-01-15", primary: "INCOME"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: -200, date: "2026-03-15", primary: "INCOME"})
+
+	windowed := filter
+	windowed.From = "2026-02-01"
+
+	income, err := repo.IncomeBySource(context.Background(), windowed, 0)
+	if err != nil {
+		t.Fatalf("IncomeBySource: %v", err)
+	}
+	var total float64
+	for _, source := range income {
+		total += source.Amount
+	}
+	if total != 200 {
+		t.Errorf("income from 2026-02-01 = %v, want 200", total)
+	}
+}
+
+// Days and weeks are named by the date they start on, so the keys sort in
+// order whatever the granularity and the client needs no calendar arithmetic.
+func TestSpendingBucketsByGranularity(t *testing.T) {
+	db, repo, filter := reportFixture(t)
+
+	// 2026-08-24 is a Monday; 26th and 30th fall in the same week, 31st starts
+	// the next one.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 10, date: "2026-08-26", primary: "TRAVEL"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 20, date: "2026-08-30", primary: "TRAVEL"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 40, date: "2026-08-31", primary: "TRAVEL"})
+
+	byDay := filter
+	byDay.Granularity = domain.GranularityDay
+	days, err := repo.SpendingByBucket(context.Background(), byDay)
+	if err != nil {
+		t.Fatalf("SpendingByBucket(day): %v", err)
+	}
+	if len(days) != 3 {
+		t.Fatalf("got %d day buckets, want 3: %+v", len(days), days)
+	}
+	if days[0].Bucket != "2026-08-26" {
+		t.Errorf("first day bucket = %q, want 2026-08-26", days[0].Bucket)
+	}
+
+	byWeek := filter
+	byWeek.Granularity = domain.GranularityWeek
+	weeks, err := repo.SpendingByBucket(context.Background(), byWeek)
+	if err != nil {
+		t.Fatalf("SpendingByBucket(week): %v", err)
+	}
+	if len(weeks) != 2 {
+		t.Fatalf("got %d week buckets, want 2: %+v", len(weeks), weeks)
+	}
+	if weeks[0].Bucket != "2026-08-24" || weeks[0].Amount != 30 {
+		t.Errorf("first week = %+v, want 2026-08-24 at 30", weeks[0])
+	}
+	if weeks[1].Bucket != "2026-08-31" || weeks[1].Amount != 40 {
+		t.Errorf("second week = %+v, want 2026-08-31 at 40", weeks[1])
+	}
+
+	// Months stay the default, and stay YYYY-MM.
+	months, err := repo.SpendingByBucket(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("SpendingByBucket(month): %v", err)
+	}
+	if len(months) != 1 || months[0].Bucket != "2026-08" {
+		t.Errorf("month buckets = %+v, want one 2026-08", months)
+	}
+}
+
+// Narrowing to a category narrows every figure, so a drill-down's percentages
+// are shares of the category that was opened.
+func TestReportNarrowsToOneCategory(t *testing.T) {
+	db, repo, filter := reportFixture(t)
+
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 60, date: "2026-03-04", primary: "FOOD_AND_DRINK"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 40, date: "2026-03-05", primary: "FOOD_AND_DRINK"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 500, date: "2026-03-06", primary: "TRAVEL"})
+
+	narrowed := filter
+	narrowed.PFCPrimary = "FOOD_AND_DRINK"
+
+	totals, err := repo.SpendingTotals(context.Background(), narrowed)
+	if err != nil {
+		t.Fatalf("SpendingTotals: %v", err)
+	}
+	if totals.Spent != 100 {
+		t.Errorf("Spent = %v, want 100", totals.Spent)
+	}
+}
+
+// The category filter resolves through the legacy map, or a drill-down would
+// drop exactly the older rows the category it was clicked from counted.
+func TestCategoryFilterMatchesLegacyRows(t *testing.T) {
+	db, repo, filter := reportFixture(t)
+
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 60, date: "2026-03-04", primary: "FOOD_AND_DRINK"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 40, date: "2026-03-05", category: `["Restaurants"]`})
+
+	narrowed := filter
+	narrowed.PFCPrimary = "FOOD_AND_DRINK"
+
+	totals, err := repo.SpendingTotals(context.Background(), narrowed)
+	if err != nil {
+		t.Fatalf("SpendingTotals: %v", err)
+	}
+	if totals.Spent != 100 {
+		t.Errorf("Spent = %v, want 100 — a legacy-categorized row was dropped", totals.Spent)
+	}
+}
+
+// The "Other" branch of a chart lists what the chart did not draw a slice for,
+// and an uncategorized row is the likeliest thing to be in it. SQL's
+// three-valued logic drops NULLs from a bare NOT IN, so this is the test that
+// catches the filter silently hiding them.
+func TestExcludeCategoriesKeepsUncategorizedRows(t *testing.T) {
+	db, _, filter := reportFixture(t)
+	listRepo := NewTransactionCacheRepo(db, DialectSQLite)
+
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 10, date: "2026-03-04", primary: "FOOD_AND_DRINK"})
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 20, date: "2026-03-05", primary: "TRAVEL"})
+	// No category at all — this is the row the exclusion must not swallow.
+	seedTxn(t, db, filter.UserID, txnSeed{amount: 30, date: "2026-03-06", name: "UNCATEGORIZED"})
+
+	rows, _, _, err := listRepo.FindByUserIDWithReceipts(
+		context.Background(),
+		filter.UserID,
+		domain.TransactionFilter{PFCPrimaryNotIn: []string{"FOOD_AND_DRINK", "TRAVEL"}},
+	)
+	if err != nil {
+		t.Fatalf("FindByUserIDWithReceipts: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1 — the uncategorized row was dropped: %+v", len(rows), rows)
+	}
+	if rows[0].Name != "UNCATEGORIZED" {
+		t.Errorf("row = %q, want UNCATEGORIZED", rows[0].Name)
 	}
 }

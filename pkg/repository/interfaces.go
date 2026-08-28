@@ -97,8 +97,9 @@ type TransactionReportRepository interface {
 	SpendingTotals(ctx context.Context, filter domain.ReportFilter) (domain.SpendingTotals, error)
 	SpendingByPrimary(ctx context.Context, filter domain.ReportFilter) ([]domain.CategoryAmount, error)
 	SpendingByDetailed(ctx context.Context, filter domain.ReportFilter) ([]domain.CategoryAmount, error)
-	SpendingByMonth(ctx context.Context, filter domain.ReportFilter) ([]domain.MonthCategoryAmount, error)
+	SpendingByBucket(ctx context.Context, filter domain.ReportFilter) ([]domain.BucketCategoryAmount, error)
 	SpendingByMerchant(ctx context.Context, filter domain.ReportFilter, limit int) ([]domain.MerchantAmount, error)
+	IncomeBySource(ctx context.Context, filter domain.ReportFilter, limit int) ([]domain.IncomeSource, error)
 }
 
 type MerchantAliasRepository interface {
