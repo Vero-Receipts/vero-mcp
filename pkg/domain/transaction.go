@@ -36,8 +36,8 @@ type Transaction struct {
 	// Recurring marks a transaction as part of a recurring series (subscription/bill).
 	// Set by the recurring-detection pass, not by Plaid. Drives the frontend badge and
 	// renders independently of whether a receipt is attached.
-	Recurring            bool       `json:"recurring"`
-	SyncedAt time.Time `json:"synced_at,omitempty"`
+	Recurring bool      `json:"recurring"`
+	SyncedAt  time.Time `json:"synced_at,omitempty"`
 	// PlaidPFC* are the category Plaid assigned, refreshed on every sync.
 	// PFCPrimary/PFCDetailed above are the effective category a client renders,
 	// which a correction may overwrite; the two differ exactly when this
@@ -134,35 +134,45 @@ type TransactionFilter struct {
 	AmountMin     *float64 // minimum absolute amount
 	AmountMax     *float64 // maximum absolute amount
 	Category      string   // substring match inside the category JSON array
-	PFCPrimary    string   // exact (case-insensitive) match on pfc_primary
-	PFCDetailed   string   // exact (case-insensitive) match on pfc_detailed
-	Matched       string   // "matched", "unmatched", or "" for all
-	Pending       string   // "true", "false", or "" for all
-	SortBy        string   // "date", "amount", "merchant", "name" (default: "date")
-	SortOrder     string   // "asc" or "desc" (default: "desc")
-	Limit         int      // page size; when > 0 the query is paginated
-	Offset        int      // page offset; ignored unless Limit > 0
+	PFCPrimary    string   // exact match on pfc_primary
+	PFCDetailed   string   // exact match on pfc_detailed
+	// PFCPrimaryNotIn / PFCDetailedNotIn exclude categories rather than select
+	// one, which is how the "Other" branch of a chart names its rows: everything
+	// the chart did not draw a slice for. An uncategorized row counts as
+	// excluded from nothing, so it survives both.
+	PFCPrimaryNotIn  []string
+	PFCDetailedNotIn []string
+	// PFCDetailedContains matches sub-categories by substring, which is how a
+	// tax line selects its rows — "donations" within the non-profit category.
+	// Any one match is enough.
+	PFCDetailedContains []string
+	Matched             string // "matched", "unmatched", or "" for all
+	Pending             string // "true", "false", or "" for all
+	SortBy              string // "date", "amount", "merchant", "name" (default: "date")
+	SortOrder           string // "asc" or "desc" (default: "desc")
+	Limit               int    // page size; when > 0 the query is paginated
+	Offset              int    // page offset; ignored unless Limit > 0
 }
 
 // TransactionResponse is what the API returns to clients (camelCase).
 type TransactionResponse struct {
-	ID                   string           `json:"id"`
-	AccountID            string           `json:"accountId"`
-	Amount               float64          `json:"amount"`
-	Date                 string           `json:"date"`
-	DateTime             *time.Time       `json:"datetime,omitempty"`
-	Name                 string           `json:"name"`
-	MerchantName         *string          `json:"merchantName"`
-	Category             []string         `json:"category"`
-	PFCPrimary           *string          `json:"pfcPrimary,omitempty"`
-	PFCDetailed          *string          `json:"pfcDetailed,omitempty"`
-	PaymentChannel       *string          `json:"paymentChannel,omitempty"`
-	Pending              bool             `json:"pending"`
-	Recurring            bool             `json:"recurring"`
-	MerchantLogo         *string          `json:"merchantLogo"`
-	PlaidPFCPrimary      *string          `json:"plaidPfcPrimary,omitempty"`
-	PlaidPFCDetailed     *string          `json:"plaidPfcDetailed,omitempty"`
-	Receipt              *AttachedReceipt `json:"receipt,omitempty"`
+	ID               string           `json:"id"`
+	AccountID        string           `json:"accountId"`
+	Amount           float64          `json:"amount"`
+	Date             string           `json:"date"`
+	DateTime         *time.Time       `json:"datetime,omitempty"`
+	Name             string           `json:"name"`
+	MerchantName     *string          `json:"merchantName"`
+	Category         []string         `json:"category"`
+	PFCPrimary       *string          `json:"pfcPrimary,omitempty"`
+	PFCDetailed      *string          `json:"pfcDetailed,omitempty"`
+	PaymentChannel   *string          `json:"paymentChannel,omitempty"`
+	Pending          bool             `json:"pending"`
+	Recurring        bool             `json:"recurring"`
+	MerchantLogo     *string          `json:"merchantLogo"`
+	PlaidPFCPrimary  *string          `json:"plaidPfcPrimary,omitempty"`
+	PlaidPFCDetailed *string          `json:"plaidPfcDetailed,omitempty"`
+	Receipt          *AttachedReceipt `json:"receipt,omitempty"`
 	// SuggestedReceipt is populated only when Receipt is nil: a proposal the
 	// user has not acted on yet. Kept in its own field so a client can never
 	// mistake a guess for a settled attachment.

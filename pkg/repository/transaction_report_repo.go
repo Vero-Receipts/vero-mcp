@@ -50,6 +50,34 @@ const spentExpr = "COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END)
 // Greenwich used to land in the previous month.
 const monthExpr = "substr(CAST(t.date AS TEXT), 1, 7)"
 
+// dayExpr renders a date as a YYYY-MM-DD key, portable for the same reason.
+const dayExpr = "substr(CAST(t.date AS TEXT), 1, 10)"
+
+// incomePrimary is the one category that counts as money arriving.
+const incomePrimary = "INCOME"
+
+// bucketExpr renders a date as the key for one bar of a chart.
+//
+// Every bucket is named by the date it starts on, so keys sort lexicographically
+// whatever the granularity and a client needs no calendar arithmetic to place
+// them. Weeks are the one case the two dialects cannot express the same way —
+// there is no portable "start of week" — so that arm branches.
+func (r *TransactionReportRepo) bucketExpr(g domain.Granularity) string {
+	switch g {
+	case domain.GranularityDay:
+		return dayExpr
+	case domain.GranularityWeek:
+		if r.dialect == DialectPostgres {
+			return "to_char(date_trunc('week', t.date), 'YYYY-MM-DD')"
+		}
+		// SQLite: step back to Monday. strftime('%w') is 0=Sunday, so the
+		// shift is (dow + 6) % 7 days.
+		return "date(t.date, '-' || ((CAST(strftime('%w', t.date) AS INTEGER) + 6) % 7) || ' days')"
+	default:
+		return monthExpr
+	}
+}
+
 // primaryExpr resolves a transaction's spending category in SQL: the
 // personal-finance-category column when it is set, otherwise the legacy
 // category array, otherwise OTHER.
@@ -92,19 +120,38 @@ func (r *TransactionReportRepo) legacyCategoryExpr() string {
 	return `CASE WHEN t.category LIKE '["%' THEN substr(t.category, 3, instr(substr(t.category, 3), '"') - 1) ELSE '' END`
 }
 
-// applyScope adds the filters every reporting query shares: the owning user,
-// the date window, and the definition of spending itself.
-func (r *TransactionReportRepo) applyScope(qb sq.SelectBuilder, f domain.ReportFilter) sq.SelectBuilder {
-	qb = qb.Where(sq.Eq{"t.user_id": f.UserID.String()}).
-		Where(sq.Gt{"t.amount": 0}).
-		Where(fmt.Sprintf("(%s) NOT IN (%s)", r.primaryExpr(), placeholderList(len(domain.ExcludedPrimaries))),
-			toAnySlice(domain.ExcludedPrimaries)...)
+// applyWindow scopes a query to one user and one date range, and nothing else.
+// Separate from applyScope because money coming in is filtered differently from
+// money going out, but both are asked about the same user over the same period.
+func (r *TransactionReportRepo) applyWindow(qb sq.SelectBuilder, f domain.ReportFilter) sq.SelectBuilder {
+	qb = qb.Where(sq.Eq{"t.user_id": f.UserID.String()})
 
 	if f.From != "" {
 		qb = qb.Where(sq.GtOrEq{"t.date": f.From})
 	}
 	if f.To != "" {
 		qb = qb.Where(sq.LtOrEq{"t.date": f.To})
+	}
+	return qb
+}
+
+// applyScope is applyWindow plus the definition of spending: an expense, in a
+// category that is not money movement.
+func (r *TransactionReportRepo) applyScope(qb sq.SelectBuilder, f domain.ReportFilter) sq.SelectBuilder {
+	qb = r.applyWindow(qb, f).
+		Where(sq.Gt{"t.amount": 0}).
+		Where(fmt.Sprintf("(%s) NOT IN (%s)", r.primaryExpr(), placeholderList(len(domain.ExcludedPrimaries))),
+			toAnySlice(domain.ExcludedPrimaries)...)
+
+	// Narrowing to one category narrows the whole report, so a drill-down's
+	// percentages are shares of the category the user opened.
+	//
+	// Filtered on the resolved primary rather than the raw column: a row whose
+	// category comes from the legacy array would otherwise be dropped, and the
+	// breakdown would not sum to the slice that was clicked. It is also the only
+	// way to select OTHER at all.
+	if f.PFCPrimary != "" {
+		qb = qb.Where(fmt.Sprintf("(%s) = ?", r.primaryExpr()), f.PFCPrimary)
 	}
 	return qb
 }
@@ -200,27 +247,70 @@ func (r *TransactionReportRepo) SpendingByDetailed(ctx context.Context, f domain
 	return out, rows.Err()
 }
 
-// SpendingByMonth returns spending per (month, primary), oldest month first.
-// The caller pivots these into per-month buckets — the category set is
-// open-ended, so pivoting in SQL would mean generating a column per category.
-func (r *TransactionReportRepo) SpendingByMonth(ctx context.Context, f domain.ReportFilter) ([]domain.MonthCategoryAmount, error) {
+// SpendingByBucket returns spending per (time bucket, primary), oldest first,
+// at the filter's granularity. The caller pivots these — the category set is
+// open-ended, so pivoting in SQL would mean a column per category.
+func (r *TransactionReportRepo) SpendingByBucket(ctx context.Context, f domain.ReportFilter) ([]domain.BucketCategoryAmount, error) {
 	primary := r.primaryExpr()
+	bucket := r.bucketExpr(f.Granularity)
 	qb := r.applyScope(
-		r.SQ.Select(monthExpr, primary, spentExpr).From("transaction_cache t"),
+		r.SQ.Select(bucket, primary, spentExpr).From("transaction_cache t"),
 		f,
-	).GroupBy(monthExpr, primary).OrderBy("1 ASC", "3 DESC")
+	).GroupBy(bucket, primary).OrderBy("1 ASC", "3 DESC")
 
 	rows, err := qb.RunWith(r.DB).QueryContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("spending by month: %w", err)
+		return nil, fmt.Errorf("spending by bucket: %w", err)
 	}
 	defer rows.Close()
 
-	var out []domain.MonthCategoryAmount
+	var out []domain.BucketCategoryAmount
 	for rows.Next() {
-		var row domain.MonthCategoryAmount
-		if err := rows.Scan(&row.Month, &row.Primary, &row.Amount); err != nil {
-			return nil, fmt.Errorf("scan spending by month: %w", err)
+		var row domain.BucketCategoryAmount
+		if err := rows.Scan(&row.Bucket, &row.Primary, &row.Amount); err != nil {
+			return nil, fmt.Errorf("scan spending by bucket: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// IncomeBySource returns money arriving over the window, grouped by payer.
+//
+// Restricted to the INCOME category rather than to any credit. Refunds and
+// chargebacks are also negative, and counting them here would draw a returned
+// purchase as earnings from the shop that took it back.
+//
+// Amounts are negated so they read as positive magnitudes: Plaid's convention
+// makes an expense positive and money arriving negative.
+func (r *TransactionReportRepo) IncomeBySource(ctx context.Context, f domain.ReportFilter, limit int) ([]domain.IncomeSource, error) {
+	name := "COALESCE(NULLIF(m.canonical_name, ''), t.name)"
+	qb := r.applyWindow(
+		r.SQ.Select(name, "COALESCE(SUM(-t.amount), 0)", "COUNT(*)").
+			From("transaction_cache t").
+			LeftJoin("merchants m ON m.id = t.merchant_id"),
+		f,
+	).
+		Where(sq.Lt{"t.amount": 0}).
+		Where(fmt.Sprintf("(%s) = ?", r.primaryExpr()), incomePrimary).
+		GroupBy(name).
+		OrderBy("2 DESC")
+
+	if limit > 0 {
+		qb = qb.Limit(uint64(limit))
+	}
+
+	rows, err := qb.RunWith(r.DB).QueryContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("income by source: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.IncomeSource
+	for rows.Next() {
+		var row domain.IncomeSource
+		if err := rows.Scan(&row.Name, &row.Amount, &row.Count); err != nil {
+			return nil, fmt.Errorf("scan income by source: %w", err)
 		}
 		out = append(out, row)
 	}
@@ -277,4 +367,48 @@ func (r *TransactionReportRepo) SpendingByMerchant(ctx context.Context, f domain
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+// TaxLineTotals sums the transactions behind each line of a tax estimate, over
+// the filter's window.
+//
+// One query per line rather than one grouped query: the lines are not a
+// partition — client meals and cell phone can both draw on rows a third line
+// also counts — so a GROUP BY would have to assign each row to exactly one
+// bucket, which is the wrong shape for the question.
+func (r *TransactionReportRepo) TaxLineTotals(ctx context.Context, f domain.ReportFilter) ([]domain.TaxLineTotal, error) {
+	out := make([]domain.TaxLineTotal, 0, len(domain.TaxLineDefinitions))
+
+	for _, line := range domain.TaxLineDefinitions {
+		scoped := f
+		scoped.PFCPrimary = line.Primary
+
+		qb := r.applyScope(
+			r.SQ.Select(spentExpr, "COUNT(*)").From("transaction_cache t"),
+			scoped,
+		)
+		if needles := line.LowerDetailContains(); len(needles) > 0 {
+			// COALESCE first: pfc_detailed is nullable, and LIKE against NULL
+			// is NULL, so an unnarrowed row would drop out silently.
+			//
+			// LOWER on both sides because the dialects disagree about LIKE —
+			// Postgres is case-sensitive, SQLite is not — and a query that
+			// passes in tests while missing rows in production is the worst of
+			// the two behaviours.
+			any := sq.Or{}
+			for _, needle := range needles {
+				any = append(any, sq.Expr(
+					"LOWER(COALESCE(t.pfc_detailed, '')) LIKE ?", "%"+needle+"%"))
+			}
+			qb = qb.Where(any)
+		}
+
+		var total domain.TaxLineTotal
+		total.Key = line.Key
+		if err := qb.RunWith(r.DB).QueryRowContext(ctx).Scan(&total.Amount, &total.Count); err != nil {
+			return nil, fmt.Errorf("tax line %s: %w", line.Key, err)
+		}
+		out = append(out, total)
+	}
+	return out, nil
 }
